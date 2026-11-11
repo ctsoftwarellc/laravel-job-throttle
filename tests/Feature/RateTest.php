@@ -73,7 +73,7 @@ it('keeps two keys independent', function () {
 
 it('shares one rate across workers with their own Redis connections', function () {
     $workers = array_map(
-        fn () => new RedisLimiter(new RedisManager(app(), 'phpredis', config('database.redis'))),
+        fn () => new RedisLimiter(new RedisManager(app(), config('database.redis.client'), config('database.redis'))),
         range(1, 3),
     );
 

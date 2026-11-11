@@ -236,8 +236,8 @@ The expectation loads only when Pest is installed. In PHPUnit, use `JobThrottle:
 |---|---|
 | PHP | 8.2, 8.3, 8.4, 8.5 |
 | Laravel | 12 (PHP 8.2+), 13 (PHP 8.3+) |
-| Redis server | 5.0 or newer |
-| Redis client | PhpRedis. Predis goes through the same Laravel calls but is not yet tested in CI. |
+| Redis server | 6.2 or newer (CI runs 6.2 and 7) |
+| Redis client | PhpRedis or Predis, both tested in CI |
 | Queues | Redis and Horizon for free waits; any queue for throttling |
 
 ## Contributing and security

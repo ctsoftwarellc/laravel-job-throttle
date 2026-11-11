@@ -15,7 +15,7 @@ composer install
 REDIS_PORT=6379 composer test
 ```
 
-Set `REDIS_HOST` and `REDIS_PORT` if your Redis is not on `127.0.0.1:6379`.
+Set `REDIS_HOST` and `REDIS_PORT` if your Redis is not on `127.0.0.1:6379`, and `REDIS_CLIENT=predis` to run the suite with Predis instead of PhpRedis.
 
 ## Checks
 

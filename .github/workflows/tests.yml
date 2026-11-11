@@ -14,13 +14,13 @@ concurrency:
 
 jobs:
   tests:
-    name: PHP ${{ matrix.php }}, Laravel ${{ matrix.laravel }}, ${{ matrix.stability }}
+    name: PHP ${{ matrix.php }}, Laravel ${{ matrix.laravel }}, ${{ matrix.stability }}, Redis ${{ matrix.redis }} (${{ matrix.client }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     services:
       redis:
-        image: redis:7
+        image: redis:${{ matrix.redis }}
         ports:
           - 6379:6379
         options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
@@ -31,6 +31,8 @@ jobs:
         php: ['8.2', '8.3', '8.4', '8.5']
         laravel: ['12', '13']
         stability: [prefer-lowest, prefer-stable]
+        redis: ['7']
+        client: [phpredis]
         exclude:
           - php: '8.2'
             laravel: '13'
@@ -39,6 +41,19 @@ jobs:
             testbench: '10'
           - laravel: '13'
             testbench: '11'
+          # The oldest Redis the README claims.
+          - php: '8.4'
+            laravel: '13'
+            testbench: '11'
+            stability: prefer-stable
+            redis: '6.2'
+            client: phpredis
+          - php: '8.4'
+            laravel: '13'
+            testbench: '11'
+            stability: prefer-stable
+            redis: '7'
+            client: predis
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,6 +71,8 @@ jobs:
 
       - name: Run tests
         run: vendor/bin/pest
+        env:
+          REDIS_CLIENT: ${{ matrix.client }}
 
   static-analysis:
     name: Static analysis
@@ -118,7 +135,7 @@ jobs:
       - run: composer update --prefer-dist --no-interaction --no-progress
 
       - name: Type coverage
-        run: vendor/bin/pest --type-coverage --min=100
+        run: php -d memory_limit=-1 vendor/bin/pest --type-coverage --min=100
 
       - name: Line coverage
         run: vendor/bin/pest --coverage --min=95
