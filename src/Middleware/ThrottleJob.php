@@ -30,6 +30,8 @@ final class ThrottleJob
      * @param  int|null  $allow  jobs per `every` seconds on the key; null applies only provider pauses and concurrency
      * @param  int|null  $concurrency  the most jobs on the key that may run at once
      * @param  int|null  $maxWait  the most seconds a job may wait in total; null uses config('job-throttle.max_wait')
+     * @param  int|null  $lockFor  the most seconds a concurrency slot stays taken when its worker dies before freeing it;
+     *                             null uses config('job-throttle.concurrency_lock_for'), or the job's timeout plus 60 when larger
      */
     public function __construct(
         private readonly string|Closure $key,
@@ -37,9 +39,14 @@ final class ThrottleJob
         int $every = 1,
         private readonly ?int $concurrency = null,
         private readonly ?int $maxWait = null,
+        private readonly ?int $lockFor = null,
     ) {
         if ($concurrency !== null && $concurrency < 1) {
             throw new InvalidArgumentException("A throttle concurrency limit must be at least 1, [{$concurrency}] given.");
+        }
+
+        if ($lockFor !== null && $lockFor < 1) {
+            throw new InvalidArgumentException("A concurrency slot must be locked for at least 1 second, [{$lockFor}] given.");
         }
 
         $this->rate = $allow === null ? null : new Rate($allow, $every);
@@ -129,7 +136,7 @@ final class ThrottleJob
         $leave = null;
 
         if ($this->concurrency !== null) {
-            $leave = $limiter->enter($key, $this->concurrency, ($queueJob->timeout() ?? 60) + 60);
+            $leave = $limiter->enter($key, $this->concurrency, $this->lockSeconds($queueJob));
 
             // ponytail: a full funnel polls every concurrency_retry seconds; a Lua wait list would end the polling.
             if ($leave === null) {
@@ -226,6 +233,15 @@ final class ThrottleJob
         } catch (Throwable $e) {
             Log::warning('Job throttle could not free a concurrency slot. The slot expires on its own.', ['exception' => $e]);
         }
+    }
+
+    /**
+     * Long enough that a running job never loses its slot: a job without its own timeout
+     * can run as long as the worker's --timeout, which the job cannot see.
+     */
+    private function lockSeconds(Job $queueJob): int
+    {
+        return $this->lockFor ?? max(config()->integer('job-throttle.concurrency_lock_for'), ($queueJob->timeout() ?? 0) + 60);
     }
 
     private function maxWaitSeconds(): int

@@ -114,7 +114,11 @@ If the job is `ShouldBeUnique`, set `uniqueFor` to at least `maxWait`, or the un
 new ThrottleJob('reports:'.$this->accountId, allow: 10, every: 60, concurrency: 2);
 ```
 
-At most 2 jobs on the key run at once. A job that finds every slot taken is released for `concurrency_retry` seconds (2 by default) without spending a try, and that wait counts toward `maxWait`. A slot is freed when the job finishes or throws. If Redis cannot free it, the slot expires 60 seconds after the job's `timeout`.
+At most 2 jobs on the key run at once. A job that finds every slot taken is released for `concurrency_retry` seconds (2 by default) without spending a try, and that wait counts toward `maxWait`. A slot is freed when the job finishes or throws. If the worker dies first, the slot stays taken for `lockFor` seconds: by default the `concurrency_lock_for` config (660, above a 600-second worker `--timeout`), or the job's own `timeout` plus 60 when that is longer. Set it above your longest worker `--timeout`, because a slot that expires while its job still runs lets one more job in:
+
+```php
+new ThrottleJob('reports:'.$this->accountId, concurrency: 2, lockFor: 1800);
+```
 
 `concurrency` works without `allow` too: `new ThrottleJob('exports', concurrency: 1)`.
 
@@ -127,6 +131,7 @@ At most 2 jobs on the key run at once. A job that finds every slot taken is rele
 | `every` | `1` | The rate window in seconds. |
 | `concurrency` | `null` | The most jobs on the key that may run at once. |
 | `maxWait` | `max_wait` | The most seconds a job may wait in total before it fails. |
+| `lockFor` | `concurrency_lock_for` | The most seconds a concurrency slot stays taken when its worker dies. |
 
 Publish the config with `php artisan vendor:publish --tag=job-throttle-config`.
 
@@ -137,6 +142,7 @@ Publish the config with `php artisan vendor:publish --tag=job-throttle-config`.
 | `fail_open` | `true` | When Redis is down: `true` runs the job unthrottled and logs a warning, `false` throws so the job fails this try. |
 | `max_wait` | `3600` | The default `maxWait`, in seconds. |
 | `concurrency_retry` | `2` | Seconds a job waits when every concurrency slot is taken. |
+| `concurrency_lock_for` | `660` | Seconds a concurrency slot stays taken when its worker dies, unless the job's `timeout` plus 60 is longer. |
 
 ## Mail
 

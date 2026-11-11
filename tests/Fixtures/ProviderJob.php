@@ -42,6 +42,7 @@ final class ProviderJob implements ShouldQueue
         public ?int $every = null,
         public ?int $concurrency = null,
         public ?int $maxWait = null,
+        public ?int $lockFor = null,
     ) {}
 
     public static function reset(): void
@@ -56,7 +57,13 @@ final class ProviderJob implements ShouldQueue
      */
     public function middleware(): array
     {
-        $options = ['allow' => $this->allow, 'every' => $this->every, 'concurrency' => $this->concurrency, 'maxWait' => $this->maxWait];
+        $options = [
+            'allow' => $this->allow,
+            'every' => $this->every,
+            'concurrency' => $this->concurrency,
+            'maxWait' => $this->maxWait,
+            'lockFor' => $this->lockFor,
+        ];
 
         return [new ThrottleJob($this->key, ...array_filter($options, fn (?int $option) => $option !== null))];
     }

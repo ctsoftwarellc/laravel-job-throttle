@@ -92,21 +92,56 @@ it('frees the slot while the job waits for its rate slot', function () {
         ->and(hasFreeConcurrencySlot(1))->toBeTrue();
 });
 
-it('lets an unfreed slot expire 60 seconds after the job timeout', function (?int $timeout, int $ttl) {
-    $job = new ProviderJob('running', 'provider', null, concurrency: 1);
+it('keeps an unfreed slot past any worker timeout before it expires', function (?int $timeout, ?int $lockFor, int $locked) {
+    $lockedFor = null;
+    app()->instance(Limiter::class, new class($lockedFor) implements Limiter
+    {
+        public function __construct(private ?int &$lockedFor) {}
+
+        public function acquire(string $key, ?Rate $rate, int $reservedSlotMs, int $budgetMs, bool $reserve = true): Decision
+        {
+            return new Decision(0);
+        }
+
+        public function pause(string $key, int $seconds): void {}
+
+        public function enter(string $key, int $limit, int $ttlSeconds): ?Closure
+        {
+            $this->lockedFor = $ttlSeconds;
+
+            return fn () => null;
+        }
+    });
+    $job = new ProviderJob('running', 'provider', null, concurrency: 1, lockFor: $lockFor);
     $job->timeout = $timeout;
     dispatch($job);
+
+    work();
+
+    expect($lockedFor)->toBe($locked);
+})->with([
+    'no timeout, so the worker --timeout applies' => [null, null, 660],
+    'no time limit at all' => [0, null, 660],
+    'a short timeout' => [30, null, 660],
+    'a timeout past the default' => [900, null, 960],
+    'an explicit lockFor' => [900, 120, 120],
+]);
+
+it('stores a concurrency slot that expires after the configured lock', function () {
+    config(['job-throttle.concurrency_lock_for' => 3600]);
+    ProviderJob::dispatch('running', 'provider', null, concurrency: 1);
     ProviderJob::$during = function () use (&$slotTtl) {
         $slotTtl = Redis::ttl('{tests:job-throttle:provider}:funnel:1');
     };
 
     work();
 
-    expect($slotTtl)->toBe($ttl);
-})->with([
-    'a 30 second timeout' => [30, 90],
-    'no timeout' => [null, 120],
-]);
+    expect($slotTtl)->toBe(3600);
+});
+
+it('rejects a lock shorter than a second', function () {
+    new ThrottleJob('provider', concurrency: 1, lockFor: 0);
+})->throws(InvalidArgumentException::class, 'A concurrency slot must be locked for at least 1 second, [0] given.');
 
 it('frees the slot when the rate limiter fails after the slot was taken', function () {
     Log::spy();
