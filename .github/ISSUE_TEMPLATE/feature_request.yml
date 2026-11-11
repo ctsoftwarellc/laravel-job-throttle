@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest a change to the throttle.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you need to throttle, and what the package cannot do for it today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Your proposal
+      description: How you would like it to work. Code examples help.
