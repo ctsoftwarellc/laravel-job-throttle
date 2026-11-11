@@ -15,6 +15,7 @@ use Ctsoftwarellc\JobThrottle\Support\ThrottleState;
 use Illuminate\Contracts\Queue\Job;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\Jobs\RedisJob;
+use Illuminate\Queue\Jobs\SqsJob;
 use Illuminate\Queue\Jobs\SyncJob;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
@@ -187,12 +188,13 @@ final class ThrottleJob
             return;
         }
 
-        $state = $state->after($key, $queueJob->attempts(), $decision->slotMs, $decision->waitMs);
+        $waitMs = $queueJob instanceof SqsJob ? min($decision->waitMs, 43_200_000) : $decision->waitMs;
+        $state = $state->after($key, $queueJob->attempts(), $decision->slotMs, $waitMs);
 
-        PayloadRelease::release($queueJob, $decision->waitMs, $state);
+        PayloadRelease::release($queueJob, $waitMs, $state);
 
         if (! $queueJob instanceof RedisJob && $queueJob->uuid() !== null) {
-            $this->remember($limiter, $queueJob->uuid(), $state, $decision->waitMs);
+            $this->remember($limiter, $queueJob->uuid(), $state, $waitMs);
         }
     }
 

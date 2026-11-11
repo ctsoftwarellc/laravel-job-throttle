@@ -337,3 +337,41 @@ it('retains non-Redis wait state for the wait plus its remaining lifetime', func
     expect(ProviderJob::$runs)->toBeEmpty()
         ->and($this->failures)->toBeEmpty();
 });
+
+it('caps SQS release visibility at twelve hours', function () {
+    $job = Mockery::mock(Illuminate\Queue\Jobs\SqsJob::class)->makePartial();
+    $job->shouldReceive('release')->once()->with(43_200);
+
+    PayloadRelease::release($job, 50_000_000, new ThrottleState);
+});
+
+it('keeps the trait requirement for a dispatchSync job', function () {
+    Ctsoftwarellc\JobThrottle\Tests\Fixtures\TraitlessProviderJob::dispatchSync();
+})->throws(LogicException::class, 'does not use the Illuminate\\Queue\\InteractsWithQueue trait');
+
+it('counts only the SQS visibility delay toward maxWait', function () {
+    $queueJob = Mockery::mock(Illuminate\Queue\Jobs\SqsJob::class)->makePartial();
+    $queueJob->shouldReceive('uuid')->andReturn('sqs-job');
+    $queueJob->shouldReceive('attempts')->andReturn(1);
+    $queueJob->shouldReceive('release')->once()->with(43_200);
+    $limiter = Mockery::mock(Limiter::class);
+    $limiter->shouldReceive('state')->once()->with('sqs-job')->andReturn(new ThrottleState);
+    $limiter->shouldReceive('acquire')->once()->andReturn(new Decision(50_000_000));
+    $limiter->shouldReceive('remember')->once()->withArgs(
+        fn (string $uuid, ThrottleState $state, int $ttl) => $uuid === 'sqs-job' && $state->waitedMs === 43_200_000 && $ttl === 103_201,
+    );
+    app()->instance(Limiter::class, $limiter);
+    $job = new ProviderJob;
+    $job->setJob($queueJob);
+
+    (new ThrottleJob('provider', allow: 1, maxWait: 60_000))->handle($job, fn () => throw new RuntimeException('Must wait'));
+});
+
+it('does not cap a long release on a queue other than SQS', function () {
+    Illuminate\Support\Facades\Date::setTestNow('2026-11-11 12:00:00');
+    $job = Mockery::mock(Illuminate\Contracts\Queue\Job::class);
+    $job->shouldReceive('release')->once()->with(50_000);
+
+    PayloadRelease::release($job, 50_000_000, new ThrottleState);
+    Illuminate\Support\Facades\Date::setTestNow();
+});

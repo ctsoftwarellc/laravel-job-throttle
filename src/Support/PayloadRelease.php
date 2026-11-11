@@ -7,6 +7,7 @@ namespace Ctsoftwarellc\JobThrottle\Support;
 use Illuminate\Contracts\Queue\Job;
 use Illuminate\Queue\Jobs\FakeJob;
 use Illuminate\Queue\Jobs\RedisJob;
+use Illuminate\Queue\Jobs\SqsJob;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -25,6 +26,10 @@ final class PayloadRelease
     {
         // FakeJob only records the delay, so tests can assert the plain whole seconds.
         $delay = $job instanceof FakeJob ? (int) ceil($waitMs / 1000) : self::secondsUntil($waitMs);
+
+        if ($job instanceof SqsJob) {
+            $delay = min($delay, 43_200);
+        }
 
         // ponytail: release, then rewrite, is two Redis calls. A worker that pops the job in
         // between costs one try, never a second run. An atomic refunding release needs a RedisQueue subclass.
