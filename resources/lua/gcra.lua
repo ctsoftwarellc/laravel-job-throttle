@@ -1,6 +1,7 @@
 -- GCRA rate limit and provider pause for one throttle key, timed by Redis TIME.
 --
--- KEYS[1]  theoretical arrival time of the next free slot, in ms
+-- KEYS[1]  hash of two times in ms: `tat`, the next free slot, and `start`, the next
+--          start that keeps the rate, counted per Redis clock second (jobs can start late)
 -- KEYS[2]  provider pause deadline, in ms (present only while paused)
 --
 -- ARGV[1] = 'pause':   ARGV[2] pause length in ms. The later deadline wins. Returns 0.
@@ -28,12 +29,6 @@ local emission = tonumber(ARGV[2])
 local reserved = tonumber(ARGV[3])
 local budget = tonumber(ARGV[4])
 local reserve = ARGV[5] == '1'
-
--- A reservation stands unless a pause now ends after it.
-if reserved > 0 and pause <= reserved then
-    return {math.max(0, reserved - now), reserved}
-end
-
 local floor = math.max(now, pause)
 
 if emission == 0 then
@@ -44,7 +39,42 @@ if emission == 0 then
     return {floor - now, 0}
 end
 
-local slot = math.max(tonumber(redis.call('GET', KEYS[1]) or 0), floor)
+-- Released jobs come back in whole seconds, so starts are counted per clock second
+-- and the slots of one second may start together.
+local second = now - now % 1000
+local batch = (math.ceil(1000 / emission) - 1) * emission
+local state = redis.call('HMGET', KEYS[1], 'tat', 'start')
+local tat = tonumber(state[1]) or 0
+local start = tonumber(state[2]) or 0
+
+-- The earliest start that keeps the rate: now while this second has room, else the next second that has.
+local ready = start - batch
+
+if ready > second then
+    ready = math.ceil(ready / 1000) * 1000
+end
+
+local function save(next_tat, next_start)
+    redis.call('HSET', KEYS[1], 'tat', next_tat, 'start', next_start)
+    redis.call('PEXPIRE', KEYS[1], math.max(next_tat, next_start) - now)
+end
+
+-- A reservation stands unless a pause now ends after it.
+if reserved > 0 and pause <= reserved then
+    if reserved > now then
+        return {reserved - now, reserved}
+    end
+
+    -- Due or late. Jobs that come back late together (a worker outage) must not all start
+    -- at once: start only if the rate allows it now, else take a fresh slot below.
+    if ready <= now then
+        save(tat, math.max(start, second) + emission)
+
+        return {0, reserved}
+    end
+end
+
+local slot = math.max(tat, floor, ready)
 
 if slot - now > budget then
     return {-1, 0}
@@ -54,6 +84,10 @@ if slot > now and not reserve then
     return {slot - now, 0}
 end
 
-redis.call('SET', KEYS[1], slot + emission, 'PX', slot + emission - now)
+if slot > now then
+    save(slot + emission, start)
+else
+    save(slot + emission, math.max(start, second) + emission)
+end
 
 return {slot - now, slot}

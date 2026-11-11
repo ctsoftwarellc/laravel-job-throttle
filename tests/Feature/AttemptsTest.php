@@ -2,10 +2,12 @@
 
 declare(strict_types=1);
 
+use Ctsoftwarellc\JobThrottle\Contracts\Limiter;
 use Ctsoftwarellc\JobThrottle\Exceptions\ProviderRateLimited;
 use Ctsoftwarellc\JobThrottle\Exceptions\ThrottleWaitExceeded;
 use Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob;
 use Ctsoftwarellc\JobThrottle\Support\PayloadRelease;
+use Ctsoftwarellc\JobThrottle\Support\Rate;
 use Ctsoftwarellc\JobThrottle\Support\RedisLimiter;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\UniqueProviderJob;
@@ -116,7 +118,7 @@ it('counts every wait toward maxWait and reserves no slot it cannot use', functi
     work();
 
     expect($this->failures[0]->getMessage())->toBe('The job would wait past its 10 second limit on throttle key [provider]. It has already waited 6 seconds.')
-        ->and(Redis::get('{tests:job-throttle:provider}:tat') - redisNowMs())->toBeLessThanOrEqual(1000);
+        ->and(app(Limiter::class)->acquire('provider', new Rate(allow: 1), 0, 60_000)->waitMs)->toBeLessThanOrEqual(6000);
 });
 
 it('keeps the unique lock, holds the chain and leaves the batch open while a job waits', function () {

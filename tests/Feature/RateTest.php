@@ -103,6 +103,39 @@ it('runs a job at once when its reserved slot has already passed', function () {
     expect($decision->runsNow())->toBeTrue();
 });
 
+it('spaces the starts of reserved jobs that all fell due while no worker ran', function () {
+    $now = redisNowMs();
+
+    [$first, $second, $third] = array_map(
+        fn (int $ago) => app(Limiter::class)->acquire('provider', new Rate(allow: 1), $now - $ago, 3_600_000),
+        [3000, 2000, 1000],
+    );
+
+    expect($first->runsNow())->toBeTrue()
+        ->and($second->waitMs)->toBeGreaterThan(0)
+        ->and($third->slotMs - $second->slotMs)->toBe(1000);
+});
+
+it('runs a late job on its slot when starting it keeps the rate, and spaces the jobs that would not', function () {
+    foreach (['a', 'b', 'c'] as $name) {
+        ProviderJob::dispatch($name, 'provider', 1);
+    }
+
+    workAll();
+    $due = max(array_column(delayedJobs(), 'availableAt'));
+
+    while (time() < $due + 1) {
+        usleep(50_000);
+    }
+
+    $restarted = time();
+    workAll();
+
+    expect(ProviderJob::$runs)->toBe(['a', 'b'])
+        ->and(delayedJobs())->toHaveCount(1)
+        ->and(delayedJobs()[0]['availableAt'])->toBeGreaterThan($restarted);
+});
+
 it('answers over budget without reserving a slot', function () {
     $rate = new Rate(allow: 1, every: 10);
     acquireMany(2, 'provider', $rate);
