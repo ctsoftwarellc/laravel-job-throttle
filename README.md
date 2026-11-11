@@ -6,10 +6,10 @@
 
 One Redis throttle for every queued job that calls an outside API. It keeps each key under the provider's rate, waits as long as the provider asks after a 429, and keeps a job's tries and `retryUntil` for real work when using a Redis queue.
 
-- **Exact slots, not polling.** Each job gets its own slot from a GCRA rate limit and is released once, to that slot.
+- **Reserved slots.** Each job gets a slot from a GCRA rate limit. If earlier jobs start late, a job may wait again to protect the sliding window.
 - **`Retry-After` pauses the whole key.** One 429 holds every job on the key, not only the job that saw it.
 - **Waits are free on Redis queues.** A throttled job keeps its tries and `retryUntil` time for real failures.
-- **Concurrency limits** per key, **fail open or closed** when Redis is down, and **one small Redis key** per throttle key that expires when idle.
+- **Concurrency limits** per key, **fail open or closed** when Redis is down, and **one Redis hash** per throttle key that expires when idle. The hash stores up to `allow` recent starts.
 - **A testing fake** with Laravel-style assertions and a Pest expectation.
 
 ## Quick start
@@ -19,60 +19,60 @@ composer require ctsoftwarellc/laravel-job-throttle
 ```
 
 ```php
-use Ctsoftwarellc\JobThrottle\Exceptions\ProviderRateLimited;
-use Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Support\Facades\Http;
-class SendSms implements ShouldQueue
+use Ctsoftwarellc\JobThrottle\{Exceptions\ProviderRateLimited, Middleware\ThrottleJob};
+class SendSms implements \Illuminate\Contracts\Queue\ShouldQueue
 {
-    use Queueable; // Includes InteractsWithQueue.
+    use \Illuminate\Foundation\Queue\Queueable;
     public function __construct(public int $tenantId, public string $to) {}
+
     public function middleware(): array
     {
         return [new ThrottleJob("sms:{$this->tenantId}", allow: 8)];
     }
+
     public function handle(): void
     {
-        $response = Http::post('https://sms.example.com/messages', ['to' => $this->to]);
-        if ($response->tooManyRequests()) { throw ProviderRateLimited::fromResponse($response); }
+        $response = \Illuminate\Support\Facades\Http::post('https://sms.example.com/messages', ['to' => $this->to]);
+        if ($response->tooManyRequests()) {
+            throw ProviderRateLimited::fromResponse($response);
+        }
         $response->throw();
     }
 }
 ```
 
-The job must use `Illuminate\Queue\InteractsWithQueue` (included in `Illuminate\Foundation\Queue\Queueable`). Otherwise, the middleware throws a `LogicException` when it cannot release a queued job. That job now runs at most 8 times per second per tenant, across all workers, and pauses the tenant's key for as long as the provider's `Retry-After` header asks.
+The job must use `Illuminate\Queue\InteractsWithQueue` (included in `Illuminate\Foundation\Queue\Queueable`). Otherwise, the middleware throws a `LogicException`, including on `dispatchSync`, because it cannot safely identify a releasable queued job. That job now runs at most 8 times per second per tenant, across all workers, and pauses the tenant's key for as long as the provider's `Retry-After` header asks.
 
 ## Why GCRA
 
 Laravel's `Redis::throttle()` counts jobs in a fixed window. A job that finds the window full is released for a fixed time and then tries again, so a blast of N jobs is popped again and again until each one finds room. Every one of those pops spends a try, and the jobs at the back of the queue can run out of tries or `retryUntil` before they run.
 
-This package uses the Generic Cell Rate Algorithm instead. One Lua script, timed by the Redis clock so every worker agrees, stores the next free slot and the current second’s start count for each key. Each job takes the next slot, and a job whose slot is in the future is released once, to that slot. The slot stays reserved for the job, so it runs when it comes back. A blast of N jobs at R per second finishes in about N/R seconds, with about two pops per job.
+This package uses the Generic Cell Rate Algorithm instead. One Lua script, timed by the Redis clock so every worker agrees, stores the next free slot and recent start times for each key. Each job takes the next slot, and a job whose slot is in the future is released to that slot. If late starts fill the sliding window, a returning job takes another slot. A blast of N jobs at R per second needs at least N/R seconds. Whole-second releases and late starts can add time and extra pops.
 
-Slots are spaced evenly, one every `every / allow` seconds (rounded up to whole milliseconds), so no window of `every` seconds ever holds more than `allow` slots. There is no burst: a provider that allows 8 calls per second sees at most 8 calls start in any one-second window.
+Slots are spaced evenly, one every `every / allow` seconds (rounded up to whole milliseconds), and actual admissions are checked against the sliding window, so a provider that allows 8 calls per second sees at most 8 calls start in any one-second window.
 
 ### Benchmark
 
 `benchmarks/run.php` dispatches a blast of N jobs at 8 per second on 10 worker processes. Each job takes 150 ms. It counts the jobs popped and the Redis commands the workers sent (queue and throttle together), for this package and for Laravel's `Redis::throttle()` with a 1-second release.
 
-Measured on an Apple M4 (16 GB), macOS, PHP 8.4.27, Redis 7.4.11 on the same machine, PhpRedis, workers with `--sleep=1` and unlimited tries:
+Measured on an Apple M4 (16 GB), macOS 27.0, PHP 8.4.27, Redis 7.4.11 on the same machine, PhpRedis, workers with `--sleep=1` and unlimited tries:
 
 | Strategy | N | Finished (s) | Ideal N/R (s) | Job pops | Pops per job | Redis round trips | Round trips per job |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| ThrottleJob | 200 | 26.7 | 25.0 | 399 | 2.00 | 2,887 | 14.4 |
-| `Redis::throttle`, 1 s release | 200 | 25.1 | 25.0 | 2,524 | 12.62 | 13,256 | 66.3 |
-| ThrottleJob | 1,000 | 127.6 | 125.0 | 1,999 | 2.00 | 14,288 | 14.3 |
-| `Redis::throttle`, 1 s release | 1,000 | 129.8 | 125.0 | 55,433 | 55.43 | 280,192 | 280.2 |
-| ThrottleJob | 3,000 | 377.4 | 375.0 | 5,999 | 2.00 | 42,813 | 14.3 |
-| `Redis::throttle`, 1 s release | 3,000 | 377.3 | 375.0 | 391,174 | 130.39 | 1,962,479 | 654.2 |
+| ThrottleJob | 200 | 34.6 | 25.0 | 463 | 2.31 | 3,502 | 17.5 |
+| `Redis::throttle`, 1 s release | 200 | 25.1 | 25.0 | 2,594 | 12.97 | 13,603 | 68.0 |
+| ThrottleJob | 1,000 | 168.2 | 125.0 | 2,321 | 2.32 | 17,462 | 17.5 |
+| `Redis::throttle`, 1 s release | 1,000 | 126.8 | 125.0 | 59,139 | 59.14 | 298,848 | 298.8 |
+| ThrottleJob | 3,000 | 501.5 | 375.0 | 6,992 | 2.33 | 52,491 | 17.5 |
+| `Redis::throttle`, 1 s release | 3,000 | 376.6 | 375.0 | 465,847 | 155.28 | 2,337,455 | 779.2 |
 
-Both finish in about N/R seconds, because both keep the rate. The difference is the work it takes: with `Redis::throttle()` every pop is an attempt, so the average job in a blast of 3,000 spends 130 tries, and any `tries` or `retryUntil` you set would fail the tail of the blast. With this package each job is popped twice (once to reserve its slot, once to run in it) and keeps all of its tries. Round trips per job include the queue's own polling.
+The package took longer in this run because it enforces a sliding window and some jobs needed another wait. It used fewer queue pops and Redis commands. Each `Redis::throttle()` pop spends an attempt, while this package refunds throttle waits on Redis queues. Round trips per job include the queue's own polling.
 
 Run it yourself against a scratch Redis (it flushes database 15): `REDIS_PORT=6379 php benchmarks/run.php 200 1000 3000`.
 
 ## Provider rate limits (429 and `Retry-After`)
 
-Throw `ProviderRateLimited` from the job when the provider refuses the call, before any side effect:
+Throw `ProviderRateLimited` from the job when the provider refuses the call, before any side effect, as shown in the quick start.
 
 Use `ProviderRateLimited::fromResponse($response)` to read seconds or an HTTP date (60 seconds if missing), `ProviderRateLimited::fromResponse($response, default: 30)` to change the default, or `ProviderRateLimited::after(30)` to set the delay directly.
 
@@ -80,7 +80,17 @@ The middleware pauses the key for that long and releases the job until the pause
 
 Your own exceptions can do the same: implement `Ctsoftwarellc\JobThrottle\Contracts\RetryAfter`.
 
-Implement `retryAfterSeconds(): int` on your exception to return the provider's delay.
+Implement `retryAfterSeconds(): int` on your exception to return the provider's delay:
+
+```php
+class ApiRateLimit extends \RuntimeException implements \Ctsoftwarellc\JobThrottle\Contracts\RetryAfter
+{
+    public function retryAfterSeconds(): int
+    {
+        return 30;
+    }
+}
+```
 
 The wait is clamped to 1 second through 24 hours. If a key needs only the pause and no rate, use `ThrottleJob::pauseOnly('airtable:'.$this->baseId)`.
 
@@ -90,13 +100,17 @@ Laravel counts every release as an attempt. This package releases the job and th
 
 A job that waits too long in total fails with `ThrottleWaitExceeded`, which names the key, the time waited and the limit. The limit is `maxWait` on the middleware, or the `max_wait` config (3600 seconds).
 
-`new ThrottleJob('gusto:'.$this->locationId, allow: 60, every: 60, maxWait: 900);`
+```php
+new \Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob('gusto:42', allow: 60, every: 60, maxWait: 900);
+```
 
 If the job is `ShouldBeUnique`, set `uniqueFor` to at least `maxWait`, or the unique lock can expire while the job waits.
 
 ## Concurrency
 
-`new ThrottleJob('reports:'.$this->accountId, allow: 10, every: 60, concurrency: 2);`
+```php
+new \Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob('reports:42', allow: 10, every: 60, concurrency: 2);
+```
 
 At most 2 jobs on the key run at once. A job that finds every slot taken is released for `concurrency_retry` seconds (2 by default) without spending a try, and that wait counts toward `maxWait`. A slot is freed when the job finishes or throws. If the worker dies first, the slot stays taken for `lockFor` seconds: by default the `concurrency_lock_for` config (660, above a 600-second worker `--timeout`), or the job's own `timeout` plus 60 when that is longer. Set it above your longest worker `--timeout`, because a slot that expires while its job still runs lets one more job in:
 
@@ -130,7 +144,15 @@ Publish the config with `php artisan vendor:publish --tag=job-throttle-config`.
 
 Throttle queued notifications and mailables to their mailer's limit in `config/mail.php`:
 
-For example, set `rate_limit` to `2` and `rate_limit_per` to `1` on the `resend` mailer for two emails per second.
+For example, add these settings to the `resend` mailer for two emails per second:
+
+```php
+return [
+    'transport' => 'resend',
+    'rate_limit' => 2,
+    'rate_limit_per' => 1,
+];
+```
 
 Add `Ctsoftwarellc\JobThrottle\Concerns\ThrottlesMail` to your queued notification or mailable.
 
@@ -138,7 +160,7 @@ A mailer without `rate_limit` is not throttled. Override `additionalMiddleware()
 
 ### Moving from `ctsoftwarellc/laravel-mail-throttle`
 
-Swap the package and change the `use` line from `Ctsoftwarellc\MailThrottle\Concerns\ThrottlesMail` to `Ctsoftwarellc\JobThrottle\Concerns\ThrottlesMail`. The trait, the constructor and the `rate_limit` config work as before. The differences: sends are spaced evenly through the window instead of bursting at its start, waits no longer spend tries, and the `mail-throttle.*` release, backoff and jitter settings are gone because each email is released once, to its slot. `MAIL_THROTTLE_FAIL_OPEN` and `MAIL_THROTTLE_KEY_PREFIX` become `JOB_THROTTLE_FAIL_OPEN` and `JOB_THROTTLE_KEY_PREFIX`.
+Swap the package and change the `use` line from `Ctsoftwarellc\MailThrottle\Concerns\ThrottlesMail` to `Ctsoftwarellc\JobThrottle\Concerns\ThrottlesMail`. The trait, the constructor and the `rate_limit` config work as before. The differences: sends are spaced evenly through the window instead of bursting at its start, waits no longer spend tries, and the `mail-throttle.*` release, backoff and jitter settings are gone because each email reserves its slot. `MAIL_THROTTLE_FAIL_OPEN` and `MAIL_THROTTLE_KEY_PREFIX` become `JOB_THROTTLE_FAIL_OPEN` and `JOB_THROTTLE_KEY_PREFIX`.
 
 ## Testing
 
@@ -186,17 +208,25 @@ it('pauses the tenant when the provider answers 429', function () {
 
 With Pest, check which keys a job is throttled by, resolved from its own `middleware()`:
 
-For example, `expect(new SendSms(42, '+15550100'))->toBeThrottledBy('sms:42')` checks the resolved key. The expectation also accepts a predicate.
+```php
+it('uses the tenant throttle', function () {
+    expect(new SendSms(42, '+15550100'))->toBeThrottledBy('sms:42');
+});
+```
+
+The expectation also accepts a predicate.
 
 The expectation loads only when Pest is installed. In PHPUnit, use `JobThrottle::keysFor($job)`, which returns the same keys.
 
 ## Limits
 
 - **Redis queues only get free waits.** On the database, SQS or another queue, a wait spends a try like a plain `release()`, and a waiting job takes no slot: it asks again when the next slot is free. `maxWait` still holds there: the throttle keeps the time each job waited in its own Redis, by the job's uuid, until the job can no longer wait.
-- **Whole seconds.** Laravel releases jobs in whole seconds, so jobs whose slots fall in the same second start together. The rate over each second holds.
-- **Late jobs keep the rate.** A job that comes back after its slot (a busy queue, a slow worker) runs at once if the key has room in the current second. Jobs that come back together after a worker outage do not all start at once: one second's worth starts, and the rest take new slots at the rate.
+- **SQS visibility.** A single SQS release is capped at 12 hours. If the key is still paused, the job waits again.
+- **Whole seconds.** Laravel releases jobs in whole seconds, so jobs whose slots fall in the same second start together. The rate holds over any sliding window of the configured length.
+- **Late jobs keep the rate.** A job that comes back after its slot (a busy queue, a slow worker) runs at once if the key has room in the current window. Jobs that come back together after a worker outage do not all start at once: the rest take new slots at the rate.
 - **Poll at least once a second.** A worker that sleeps 3 seconds between empty polls finds 3 seconds of released jobs at once, and only one second's worth may start. Run enough worker processes, or a short `--sleep`, that a released job is picked up in the second it becomes due.
 - **Redis Cluster** keeps the throttle keys in one slot. The free-wait rewrite needs the queue key Laravel builds outside a cluster; on a cluster a wait spends one try.
+- **An extra wait protects the rate.** If workers run earlier jobs late, a returning reservation can need another release before it is safe to run.
 - **One try in a race.** If a worker takes a released job in the moment before the rewrite, that wait spends one try. A job never runs twice.
 - **Stacked middleware consumes outer slots.** When two `ThrottleJob` middleware are stacked, the outer throttle takes a slot even if the inner throttle releases the job.
 - **Concurrency waits poll** every `concurrency_retry` seconds; there is no waiting list.

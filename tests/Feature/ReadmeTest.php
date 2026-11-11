@@ -10,6 +10,5 @@ foreach ($examples[1] as $example) {
 }
 
 it('keeps the README quick start short and executes its PHP examples', function () use ($examples) {
-    expect($examples[1])->toHaveCount(2)
-        ->and(count(explode("\n", $examples[1][0])))->toBeLessThanOrEqual(20);
+    expect(count(explode("\n", $examples[1][0])))->toBeLessThanOrEqual(20);
 });
