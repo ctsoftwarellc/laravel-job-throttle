@@ -2,9 +2,11 @@
 
 declare(strict_types=1);
 
+use Ctsoftwarellc\JobThrottle\Exceptions\ProviderRateLimited;
 use Ctsoftwarellc\JobThrottle\Exceptions\ThrottleWaitExceeded;
 use Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob;
 use Ctsoftwarellc\JobThrottle\Support\PayloadRelease;
+use Ctsoftwarellc\JobThrottle\Support\RedisLimiter;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\UniqueProviderJob;
 use Illuminate\Bus\UniqueLock;
@@ -16,7 +18,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 
-mutates(ThrottleJob::class, PayloadRelease::class);
+mutates(RedisLimiter::class, ThrottleJob::class, PayloadRelease::class);
 
 /**
  * Dispatch a job that runs at once, so the next job on the key has to wait.
@@ -84,7 +86,7 @@ it('makes a real retry take a fresh slot instead of reusing the old one', functi
     takeTheNextSlot();
     ProviderJob::dispatch('retried', 'provider', 1, 10);
     rewriteReadyJob(fn (array $payload) => [...$payload, 'attempts' => 1, 'jobThrottle' => [
-        'attempt' => 1, 'waited' => 0, 'slots' => [sha1('provider') => redisNowMs() - 1000],
+        'attempt' => 1, 'waited' => 0, 'slots' => [hash('xxh128', 'provider') => redisNowMs() - 1000],
     ]]);
 
     work(tries: 3);
@@ -105,17 +107,16 @@ it('fails a job that would wait past maxWait with a clear reason', function () {
         ->and($this->failures[0]->getMessage())->toBe('The job would wait past its 5 second limit on throttle key [provider]. It has already waited 0 seconds.');
 });
 
-it('counts every wait toward maxWait', function () {
-    takeTheNextSlot(allow: 1, every: 4);
-    ProviderJob::dispatch('patient', 'provider', 1, 4, maxWait: 10);
+it('counts every wait toward maxWait and reserves no slot it cannot use', function () {
+    ProviderJob::dispatch('patient', 'provider', 1, 1, maxWait: 10);
+    ProviderJob::$failures = [ProviderRateLimited::after(6)];
 
     work();
     releaseDelayedJobs();
     work();
-    releaseDelayedJobs();
-    work();
 
-    expect($this->failures[0]->getMessage())->toStartWith('The job would wait past its 10 second limit on throttle key [provider]. It has already waited ');
+    expect($this->failures[0]->getMessage())->toBe('The job would wait past its 10 second limit on throttle key [provider]. It has already waited 6 seconds.')
+        ->and(Redis::get('{tests:job-throttle:provider}:tat') - redisNowMs())->toBeLessThanOrEqual(1000);
 });
 
 it('keeps the unique lock, holds the chain and leaves the batch open while a job waits', function () {
@@ -158,7 +159,18 @@ it('logs a failed refund and leaves the job waiting, not failed', function () {
     expect(ProviderJob::$runs)->toBe(['first'])
         ->and($this->failures)->toBeEmpty()
         ->and(Redis::zcard('released'))->toBe(1);
-    Log::shouldHaveReceived('warning')->withArgs(fn (string $message) => $message === 'Job throttle could not refund the released job, so this wait spends one try.')->once();
+    Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context) => $message === 'Job throttle could not refund the released job, so this wait spends one try.'
+        && $context['job'] === ProviderJob::class
+        && $context['exception']->getMessage() === 'Redis rejected the job throttle refund script.')->once();
+});
+
+it('keeps unicode in the refunded payload as Laravel writes it', function () {
+    takeTheNextSlot();
+    ProviderJob::dispatch('Envío café', 'provider', 1, 10);
+
+    work();
+
+    expect(Redis::zrange('queues:default:delayed', 0, -1)[0])->toContain('Envío café');
 });
 
 it('runs a dispatchSync job once, without throttling it', function () {
@@ -188,7 +200,9 @@ it('runs a job once when Redis is down and the throttle fails open', function ()
     work();
 
     expect(ProviderJob::$runs)->toBe(['failing']);
-    Log::shouldHaveReceived('warning')->withArgs(fn (string $message) => $message === 'Job throttle could not reach Redis, so the job runs unthrottled.')->once();
+    Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context) => $message === 'Job throttle could not reach Redis, so the job runs unthrottled.'
+        && $context['key'] === 'provider'
+        && $context['exception'] instanceof Throwable)->once();
 });
 
 it('does not run the job when Redis is down and the throttle fails closed', function () {

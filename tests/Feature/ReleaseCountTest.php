@@ -2,8 +2,13 @@
 
 declare(strict_types=1);
 
+use Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob;
+use Ctsoftwarellc\JobThrottle\Support\PayloadRelease;
+use Ctsoftwarellc\JobThrottle\Support\RedisLimiter;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
 use Illuminate\Support\Facades\Redis;
+
+mutates(RedisLimiter::class, ThrottleJob::class, PayloadRelease::class);
 
 it('releases each job of a blast once, to its own slot, and finishes in about N/R seconds', function () {
     $started = microtime(true);

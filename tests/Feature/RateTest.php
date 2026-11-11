@@ -3,15 +3,18 @@
 declare(strict_types=1);
 
 use Ctsoftwarellc\JobThrottle\Contracts\Limiter;
+use Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob;
 use Ctsoftwarellc\JobThrottle\Support\Decision;
+use Ctsoftwarellc\JobThrottle\Support\PayloadRelease;
 use Ctsoftwarellc\JobThrottle\Support\Rate;
 use Ctsoftwarellc\JobThrottle\Support\RedisLimiter;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
 use Illuminate\Queue\WorkerOptions;
 use Illuminate\Redis\RedisManager;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Redis;
 
-mutates(RedisLimiter::class);
+mutates(RedisLimiter::class, ThrottleJob::class, PayloadRelease::class);
 
 /**
  * @return list<Decision>
@@ -112,6 +115,15 @@ it('answers over budget without reserving a slot', function () {
         ->and($next->waitMs)->toBeBetween(19_900, 20_000);
 });
 
+it('counts the rate per second unless told otherwise', function () {
+    ProviderJob::dispatch('first', 'provider', 4);
+    ProviderJob::dispatch('second', 'provider', 4);
+
+    workAll();
+
+    expect(delayedJobs()[0]['payload']['jobThrottle']['waited'])->toBeBetween(200, 250);
+});
+
 it('throttles queued jobs on a key to the rate across the queue', function () {
     foreach (range(1, 3) as $i) {
         ProviderJob::dispatch("job-{$i}", 'provider', 2);
@@ -140,3 +152,16 @@ it('lets a job on a queue without refunds wait without reserving, so a backlog c
         ->and(DB::table('jobs')->value('attempts'))->toBe(1)
         ->and($next->waitMs)->toBeBetween(9_900, 10_000);
 });
+
+it('prefixes its Redis keys with the key prefix, then the cache prefix, then the app name', function (array $config, string $redisKey) {
+    config(['job-throttle.key_prefix' => null, ...$config]);
+
+    app(Limiter::class)->acquire('provider', new Rate(allow: 1), 0, 3_600_000);
+
+    expect(Redis::exists($redisKey))->toBe(1);
+})->with([
+    'key prefix' => [['job-throttle.key_prefix' => 'billing'], '{billing:job-throttle:provider}:tat'],
+    'cache prefix' => [['cache.prefix' => 'shop-cache'], '{shop-cache:job-throttle:provider}:tat'],
+    'app name' => [['cache.prefix' => '', 'app.name' => 'Shop'], '{Shop:job-throttle:provider}:tat'],
+    'nothing set' => [['cache.prefix' => '', 'app.name' => ''], '{laravel:job-throttle:provider}:tat'],
+]);

@@ -45,10 +45,10 @@
     },
     "scripts": {
         "test": "pest",
-        "test:types": "pest --type-coverage --min=100",
+        "test:types": "@php -d memory_limit=-1 vendor/bin/pest --type-coverage --min=100",
         "test:coverage": "pest --coverage --min=95",
         "test:mutate": "pest --mutate --min=90",
-        "analyse": "phpstan analyse",
+        "analyse": "phpstan analyse --memory-limit=1G",
         "format": "pint",
         "lint": "pint --test"
     },

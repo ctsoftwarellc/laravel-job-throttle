@@ -5,13 +5,19 @@ declare(strict_types=1);
 use Ctsoftwarellc\JobThrottle\Contracts\Limiter;
 use Ctsoftwarellc\JobThrottle\Contracts\RetryAfter;
 use Ctsoftwarellc\JobThrottle\Exceptions\ProviderRateLimited;
+use Ctsoftwarellc\JobThrottle\Facades\JobThrottle;
+use Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob;
+use Ctsoftwarellc\JobThrottle\Support\PayloadRelease;
 use Ctsoftwarellc\JobThrottle\Support\Rate;
+use Ctsoftwarellc\JobThrottle\Support\RedisLimiter;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
 use GuzzleHttp\Psr7\Response as Psr7Response;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
+
+mutates(RedisLimiter::class, ThrottleJob::class, PayloadRelease::class);
 
 function pauseTtl(string $key = 'provider'): int
 {
@@ -34,6 +40,7 @@ it('pauses the key and releases the reporting job for Retry-After seconds', func
     expect(pauseTtl())->toBeBetween(29_000, 30_000)
         ->and($released['availableAt'] - time())->toBeBetween(30, 31)
         ->and($released['payload']['attempts'])->toBe(0)
+        ->and($released['payload']['jobThrottle']['waited'])->toBe(30_000)
         ->and($this->failures)->toBeEmpty();
 });
 
@@ -108,7 +115,9 @@ it('still releases the reporting job when the pause cannot be saved', function (
 
     expect(delayedJobs())->toHaveCount(1)
         ->and($this->failures)->toBeEmpty();
-    Log::shouldHaveReceived('warning')->withArgs(fn (string $message) => $message === 'Job throttle could not pause the key, so only this job waits.')->once();
+    Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context) => $message === 'Job throttle could not pause the key, so only this job waits.'
+        && $context['key'] === 'provider'
+        && $context['exception'] instanceof Throwable)->once();
 });
 
 it('fails a job whose pause would pass maxWait', function () {
@@ -138,7 +147,7 @@ it('pauses for any exception that implements RetryAfter, clamped to 1 second thr
 
     work();
 
-    expect(pauseTtl())->toBeBetween($paused * 1000 - 1000, $paused * 1000);
+    expect(pauseTtl())->toBeBetween($paused * 1000 - 500, $paused * 1000);
 })->with([
     'zero' => [0, 1],
     'negative' => [-5, 1],
@@ -161,3 +170,14 @@ it('reads Retry-After from a response', function (?string $header, int $seconds)
     'missing' => [null, 60],
     'unreadable' => ['soon', 60],
 ]);
+
+it('applies only the provider pause through pauseOnly()', function () {
+    JobThrottle::fake();
+    $job = (new ProviderJob('sync'))->withFakeQueueInteractions();
+    ProviderJob::$failures = [ProviderRateLimited::after(30)];
+
+    ThrottleJob::pauseOnly('airtable:7')->handle($job, fn (ProviderJob $job) => $job->handle());
+
+    $job->assertReleased(30);
+    JobThrottle::assertPaused('airtable:7', seconds: 30);
+});

@@ -39,7 +39,7 @@ final class ProviderJob implements ShouldQueue
         public string $name = 'job',
         public string $key = 'provider',
         public ?int $allow = 1,
-        public int $every = 1,
+        public ?int $every = null,
         public ?int $concurrency = null,
         public ?int $maxWait = null,
     ) {}
@@ -56,7 +56,9 @@ final class ProviderJob implements ShouldQueue
      */
     public function middleware(): array
     {
-        return [new ThrottleJob($this->key, $this->allow, $this->every, $this->concurrency, $this->maxWait)];
+        $options = ['allow' => $this->allow, 'every' => $this->every, 'concurrency' => $this->concurrency, 'maxWait' => $this->maxWait];
+
+        return [new ThrottleJob($this->key, ...array_filter($options, fn (?int $option) => $option !== null))];
     }
 
     public function handle(): void

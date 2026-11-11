@@ -13,7 +13,7 @@ use Illuminate\Contracts\Queue\Job;
 final readonly class ThrottleState
 {
     /**
-     * @param  array<array-key, int>  $slots  reserved slot in ms, by sha1 of the throttle key
+     * @param  array<array-key, int>  $slots  reserved slot in ms, by xxh128 hash of the throttle key
      */
     public function __construct(
         public int $attempt = 0,
@@ -41,13 +41,13 @@ final readonly class ThrottleState
      */
     public function slotFor(string $key, int $attempt): int
     {
-        return $attempt === $this->attempt ? ($this->slots[sha1($key)] ?? 0) : 0;
+        return $attempt === $this->attempt ? ($this->slots[hash('xxh128', $key)] ?? 0) : 0;
     }
 
     public function after(string $key, int $attempt, int $slotMs, int $waitMs): self
     {
         $slots = $attempt === $this->attempt ? $this->slots : [];
-        $slots[sha1($key)] = $slotMs;
+        $slots[hash('xxh128', $key)] = $slotMs;
 
         return new self($attempt, $this->waitedMs + $waitMs, $slots);
     }

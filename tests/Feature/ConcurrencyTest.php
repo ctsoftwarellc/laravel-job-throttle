@@ -6,13 +6,17 @@ use Ctsoftwarellc\JobThrottle\Contracts\Limiter;
 use Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob;
 use Ctsoftwarellc\JobThrottle\Support\Decision;
 use Ctsoftwarellc\JobThrottle\Support\Funnel;
+use Ctsoftwarellc\JobThrottle\Support\PayloadRelease;
 use Ctsoftwarellc\JobThrottle\Support\Rate;
+use Ctsoftwarellc\JobThrottle\Support\RedisLimiter;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
 use Illuminate\Queue\Events\JobExceptionOccurred;
 use Illuminate\Redis\Limiters\ConcurrencyLimiter;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
+
+mutates(RedisLimiter::class, ThrottleJob::class, PayloadRelease::class);
 
 /**
  * Take every concurrency slot on the key, as jobs running on other workers would.
@@ -42,16 +46,30 @@ it('runs no more than K jobs on a key at once', function () {
 
     expect(ProviderJob::$runs)->toBeEmpty()
         ->and($released['availableAt'] - time())->toBeBetween(2, 3)
-        ->and($released['payload']['attempts'])->toBe(0);
+        ->and($released['payload']['attempts'])->toBe(0)
+        ->and($released['payload']['jobThrottle']['waited'])->toBe(2000);
+});
+
+it('lets a job wait exactly its maxWait', function () {
+    fillConcurrencySlots(1);
+    ProviderJob::dispatch('waiting', 'provider', null, concurrency: 1, maxWait: 2);
+
+    work();
+
+    expect(delayedJobs())->toHaveCount(1)
+        ->and($this->failures)->toBeEmpty();
 });
 
 it('holds a slot while the job runs and frees it afterwards', function () {
     ProviderJob::dispatch('running', 'provider', null, concurrency: 1);
-    ProviderJob::$during = fn () => expect(hasFreeConcurrencySlot(1))->toBeFalse();
+    ProviderJob::$during = function () use (&$freeWhileRunning) {
+        $freeWhileRunning = hasFreeConcurrencySlot(1);
+    };
 
     work();
 
     expect(ProviderJob::$runs)->toBe(['running'])
+        ->and($freeWhileRunning)->toBeFalse()
         ->and(hasFreeConcurrencySlot(1))->toBeTrue();
 });
 
@@ -74,15 +92,49 @@ it('frees the slot while the job waits for its rate slot', function () {
         ->and(hasFreeConcurrencySlot(1))->toBeTrue();
 });
 
-it('lets an unfreed slot expire 60 seconds after the job timeout', function () {
+it('lets an unfreed slot expire 60 seconds after the job timeout', function (?int $timeout, int $ttl) {
     $job = new ProviderJob('running', 'provider', null, concurrency: 1);
-    $job->timeout = 30;
+    $job->timeout = $timeout;
     dispatch($job);
-    ProviderJob::$during = fn () => expect(Redis::ttl('{tests:job-throttle:provider}:funnel:1'))->toBe(90);
+    ProviderJob::$during = function () use (&$slotTtl) {
+        $slotTtl = Redis::ttl('{tests:job-throttle:provider}:funnel:1');
+    };
 
     work();
 
-    expect(ProviderJob::$runs)->toBe(['running']);
+    expect($slotTtl)->toBe($ttl);
+})->with([
+    'a 30 second timeout' => [30, 90],
+    'no timeout' => [null, 120],
+]);
+
+it('frees the slot when the rate limiter fails after the slot was taken', function () {
+    Log::spy();
+    $freed = false;
+    app()->instance(Limiter::class, new class($freed) implements Limiter
+    {
+        public function __construct(private bool &$freed) {}
+
+        public function acquire(string $key, ?Rate $rate, int $reservedSlotMs, int $budgetMs, bool $reserve = true): Decision
+        {
+            throw new RedisException('Connection lost');
+        }
+
+        public function pause(string $key, int $seconds): void {}
+
+        public function enter(string $key, int $limit, int $ttlSeconds): ?Closure
+        {
+            return function () {
+                $this->freed = true;
+            };
+        }
+    });
+    ProviderJob::dispatch('unthrottled', 'provider', 1, concurrency: 1);
+
+    work();
+
+    expect($freed)->toBeTrue()
+        ->and(ProviderJob::$runs)->toBe(['unthrottled']);
 });
 
 it('counts concurrency waits toward maxWait', function () {
@@ -121,7 +173,8 @@ it('logs a slot that cannot be freed and keeps the job\'s own exception', functi
 
     expect(ProviderJob::$runs)->toBe(['failing'])
         ->and($exceptions)->toBe(['Provider is down']);
-    Log::shouldHaveReceived('warning')->withArgs(fn (string $message) => $message === 'Job throttle could not free a concurrency slot. The slot expires on its own.')->once();
+    Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context) => $message === 'Job throttle could not free a concurrency slot. The slot expires on its own.'
+        && $context['exception']->getMessage() === 'Connection lost')->once();
 });
 
 it('rejects a concurrency limit below one', function () {

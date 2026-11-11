@@ -20,14 +20,14 @@ final class RedisLimiter implements Limiter
     public function acquire(string $key, ?Rate $rate, int $reservedSlotMs, int $budgetMs, bool $reserve = true): Decision
     {
         /** @var array{int, int} $result */
-        $result = $this->evaluate($key, 'acquire', $rate->emissionMs ?? 0, $reservedSlotMs, $budgetMs, (int) $reserve);
+        $result = $this->evaluate($key, ['acquire', $rate->emissionMs ?? 0, $reservedSlotMs, $budgetMs, (int) $reserve]);
 
         return new Decision(waitMs: $result[0], slotMs: $result[1]);
     }
 
     public function pause(string $key, int $seconds): void
     {
-        $this->evaluate($key, 'pause', $seconds * 1000);
+        $this->evaluate($key, ['pause', $seconds * 1000]);
     }
 
     public function enter(string $key, int $limit, int $ttlSeconds): ?Closure
@@ -39,11 +39,14 @@ final class RedisLimiter implements Limiter
         return $slot === null ? null : fn () => $funnel->free($slot, $holder);
     }
 
-    private function evaluate(string $key, string|int ...$arguments): mixed
+    /**
+     * @param  list<string|int>  $arguments
+     */
+    private function evaluate(string $key, array $arguments): mixed
     {
         $name = $this->name($key);
 
-        return Lua::run($this->connection(), 'gcra', ["{$name}:tat", "{$name}:pause"], array_values($arguments));
+        return Lua::run($this->connection(), 'gcra', ["{$name}:tat", "{$name}:pause"], $arguments);
     }
 
     private function connection(): Connection

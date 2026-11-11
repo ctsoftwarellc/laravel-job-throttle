@@ -7,10 +7,13 @@ use Ctsoftwarellc\JobThrottle\Exceptions\ProviderRateLimited;
 use Ctsoftwarellc\JobThrottle\Exceptions\ThrottleWaitExceeded;
 use Ctsoftwarellc\JobThrottle\Facades\JobThrottle;
 use Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob;
+use Ctsoftwarellc\JobThrottle\Support\PayloadRelease;
 use Ctsoftwarellc\JobThrottle\Testing\FakeLimiter;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
 use PHPUnit\Framework\AssertionFailedError;
 use Symfony\Component\Process\Process;
+
+mutates(ThrottleJob::class, PayloadRelease::class);
 
 /**
  * Run the job through its middleware the way the queue does, with Laravel's fake queue job.
@@ -147,4 +150,12 @@ it('loads the Pest expectations file safely in an app without Pest', function ()
     $process->mustRun();
 
     expect($process->getOutput())->toBe('loaded');
+});
+
+it('lets a job with a concurrency limit run under the fake', function () {
+    JobThrottle::fake();
+
+    runThrottled(new ProviderJob('sms', 'quo-sms:42', allow: 8, concurrency: 2))->assertNotReleased();
+
+    expect(ProviderJob::$runs)->toBe(['sms']);
 });

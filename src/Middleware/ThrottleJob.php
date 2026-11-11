@@ -70,7 +70,8 @@ final class ThrottleJob
             [$decision, $leave] = $this->admit($limiter, $key, $queueJob, $state);
         } catch (Throwable $e) {
             $this->failOpen($e, $key);
-            [$decision, $leave] = [new Decision(0), null];
+            $decision = new Decision(0);
+            $leave = null;
         }
 
         if (! $decision->runsNow()) {
@@ -116,7 +117,7 @@ final class ThrottleJob
             $leave = $limiter->enter($key, $this->concurrency, ($queueJob->timeout() ?? 60) + 60);
 
             if ($leave === null) {
-                return [new Decision(config()->integer('job-throttle.concurrency_retry', 2) * 1000, $reservedSlot), null];
+                return [$this->decisionFor(config()->integer('job-throttle.concurrency_retry') * 1000, $reservedSlot, $state), null];
             }
         }
 
@@ -144,12 +145,20 @@ final class ThrottleJob
     }
 
     /**
+     * A wait decided here rather than by the limiter, or -1 when it would pass maxWait.
+     */
+    private function decisionFor(int $waitMs, int $slotMs, ThrottleState $state): Decision
+    {
+        return new Decision($state->waitedMs + $waitMs > $this->maxWaitMs() ? -1 : $waitMs, $slotMs);
+    }
+
+    /**
      * Release the job for the wait without spending a try, or fail it once its waits pass maxWait.
      */
     private function wait(Job $queueJob, string $key, Decision $decision, ThrottleState $state): void
     {
-        if ($decision->waitMs < 0 || $state->waitedMs + $decision->waitMs > $this->maxWaitMs()) {
-            $queueJob->fail(ThrottleWaitExceeded::forKey($key, $state->waitedMs, intdiv($this->maxWaitMs(), 1000)));
+        if ($decision->waitMs < 0) {
+            $queueJob->fail(ThrottleWaitExceeded::forKey($key, $state->waitedMs, $this->maxWaitSeconds()));
 
             return;
         }
@@ -172,7 +181,7 @@ final class ThrottleJob
             Log::warning('Job throttle could not pause the key, so only this job waits.', ['key' => $key, 'exception' => $e]);
         }
 
-        $this->wait($queueJob, $key, new Decision($seconds * 1000), $state);
+        $this->wait($queueJob, $key, $this->decisionFor($seconds * 1000, 0, $state), $state);
     }
 
     /**
@@ -180,7 +189,7 @@ final class ThrottleJob
      */
     private function failOpen(Throwable $e, string $key): void
     {
-        if (! config()->boolean('job-throttle.fail_open', true)) {
+        if (! config()->boolean('job-throttle.fail_open')) {
             throw $e;
         }
 
@@ -203,8 +212,13 @@ final class ThrottleJob
         }
     }
 
+    private function maxWaitSeconds(): int
+    {
+        return $this->maxWait ?? config()->integer('job-throttle.max_wait');
+    }
+
     private function maxWaitMs(): int
     {
-        return ($this->maxWait ?? config()->integer('job-throttle.max_wait', 3600)) * 1000;
+        return $this->maxWaitSeconds() * 1000;
     }
 }
