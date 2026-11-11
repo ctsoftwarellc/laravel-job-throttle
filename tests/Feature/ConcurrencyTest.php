@@ -133,6 +133,7 @@ it('keeps an unfreed slot past any worker timeout before it expires', function (
     'a short timeout' => [30, null, 660],
     'a timeout past the default' => [900, null, 960],
     'an explicit lockFor' => [900, 120, 120],
+    'the minimum explicit lockFor' => [900, 1, 1],
 ]);
 
 it('stores a concurrency slot that expires after the configured lock', function () {

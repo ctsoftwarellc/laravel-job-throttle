@@ -286,3 +286,54 @@ it('does not run the job when Redis is down and the throttle fails closed', func
     expect(ProviderJob::$runs)->toBeEmpty()
         ->and(delayedJobs())->toHaveCount(1);
 });
+
+it('keeps non-Redis wait state isolated by application and job', function () {
+    $limiter = app(Limiter::class);
+    $first = new ThrottleState(waitedMs: 3000);
+    $second = new ThrottleState(waitedMs: 5000);
+    config(['job-throttle.key_prefix' => 'first-app']);
+    $limiter->remember('job-one', $first, 60);
+    $limiter->remember('job-two', $second, 60);
+    config(['job-throttle.key_prefix' => 'second-app']);
+    $limiter->remember('job-one', $second, 60);
+
+    expect($limiter->state('job-one')->waitedMs)->toBe(5000);
+    config(['job-throttle.key_prefix' => 'first-app']);
+    expect($limiter->state('job-one')->waitedMs)->toBe(3000)
+        ->and($limiter->state('job-two')->waitedMs)->toBe(5000);
+});
+
+it('rounds fractional waits up for fake queue interactions', function (int $wait, int $seconds) {
+    $job = new Illuminate\Queue\Jobs\FakeJob;
+
+    PayloadRelease::release($job, $wait, new ThrottleState);
+
+    expect($job->releaseDelay)->toBe($seconds);
+})->with([[1, 1], [1001, 2], [1501, 2], [2000, 2]]);
+
+it('releases a real queue job after the whole wait from a fractional second', function (int $wait, int $seconds) {
+    Illuminate\Support\Facades\Date::setTestNow('2026-11-11 12:00:00.900');
+    $job = Mockery::mock(Illuminate\Contracts\Queue\Job::class);
+    $job->shouldReceive('release')->once()->with($seconds);
+
+    PayloadRelease::release($job, $wait, new ThrottleState);
+
+    Illuminate\Support\Facades\Date::setTestNow();
+})->with([[1, 1], [100, 1], [101, 2], [1100, 2], [1101, 3]]);
+
+it('retains non-Redis wait state for the wait plus its remaining lifetime', function () {
+    $this->loadLaravelMigrations();
+    $limiter = Mockery::mock(Limiter::class);
+    $limiter->shouldReceive('state')->once()->andReturn(new ThrottleState);
+    $limiter->shouldReceive('acquire')->once()->andReturn(new Decision(5000));
+    $limiter->shouldReceive('remember')->once()->withArgs(
+        fn (string $uuid, ThrottleState $state, int $ttl) => $uuid !== '' && $state->waitedMs === 5000 && $ttl === 21,
+    );
+    app()->instance(Limiter::class, $limiter);
+    ProviderJob::dispatch('waiting', 'provider', 1, maxWait: 15)->onConnection('database');
+
+    app('queue.worker')->runNextJob('database', 'default', new WorkerOptions(timeout: 0, sleep: 0, maxTries: 0));
+
+    expect(ProviderJob::$runs)->toBeEmpty()
+        ->and($this->failures)->toBeEmpty();
+});
