@@ -4,9 +4,7 @@ All notable changes to this package are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-## [1.0.0] - Unreleased
+## [1.0.0] - 2026-11-11
 
 ### Added
 
@@ -18,5 +16,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `ThrottlesMail` and `ThrottleMail` for `mail.mailers.*.rate_limit`, compatible with `ctsoftwarellc/laravel-mail-throttle`.
 - `JobThrottle::fake()` with `assertThrottled`, `assertNotThrottled`, `assertPaused` and `assertNotPaused`, the Pest expectation `toBeThrottledBy()` and `JobThrottle::keysFor()`.
 
-[Unreleased]: https://github.com/ctsoftwarellc/laravel-job-throttle/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/ctsoftwarellc/laravel-job-throttle/releases/tag/v1.0.0

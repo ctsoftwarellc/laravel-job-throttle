@@ -36,4 +36,4 @@ A pull request must pass every check that CI runs:
 - Keep classes small and `final`, fully typed, with `declare(strict_types=1)`.
 - Never run a job twice. Any Redis call that can fail after a job's side effects must be caught and logged, not thrown.
 - No static or singleton state that holds request, job or tenant data: workers are long-lived.
-- Add a line to `CHANGELOG.md` under Unreleased.
+- Add a line to `CHANGELOG.md` under an Unreleased heading for changes after 1.0.0.
