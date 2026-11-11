@@ -39,11 +39,12 @@ it('throttles queued mail to the rate_limit of its mailer', function () {
 it('spreads rate_limit evenly over rate_limit_per seconds', function () {
     config(['mail.mailers.array.rate_limit' => 2, 'mail.mailers.array.rate_limit_per' => 10]);
     shipOrders(2);
+    $before = time();
 
     workAll();
 
     expect(OrderShipped::$sent)->toHaveCount(1)
-        ->and(delayedJobs()[0]['availableAt'] - time())->toBeBetween(5, 6);
+        ->and(delayedJobs()[0]['availableAt'])->toBeBetween($before + 5, time() + 6);
 });
 
 it('sends mail unthrottled when its mailer has no rate_limit', function () {

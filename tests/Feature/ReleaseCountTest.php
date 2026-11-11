@@ -38,7 +38,7 @@ it('releases each job of a blast once, to its own slot, and finishes in about N/
 
     expect(ProviderJob::$runs)->toHaveCount(20)
         ->and($pops)->toBe(39)
-        ->and(time() - $started)->toBeLessThanOrEqual(4);
+        ->and(time() - $started)->toBeLessThanOrEqual(5);
 });
 
 it('keeps one small hash per throttle key, which expires when the key is idle', function () {

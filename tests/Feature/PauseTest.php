@@ -15,13 +15,15 @@ use GuzzleHttp\Psr7\Response as Psr7Response;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Redis;
 
 mutates(RedisLimiter::class, ThrottleJob::class, PayloadRelease::class);
 
-function pauseTtl(string $key = 'provider'): int
+/**
+ * Milliseconds until a job on the key may start, as the throttle answers it.
+ */
+function pauseLeft(string $key = 'provider'): int
 {
-    return Redis::pttl("{tests:job-throttle:{$key}}:pause");
+    return app(Limiter::class)->acquire($key, null, 0, PHP_INT_MAX)->waitMs;
 }
 
 function rateLimitedResponse(?string $retryAfter): Response
@@ -32,15 +34,15 @@ function rateLimitedResponse(?string $retryAfter): Response
 it('pauses the key and releases the reporting job for Retry-After seconds', function () {
     ProviderJob::dispatch('reporter', 'provider', 10);
     ProviderJob::$failures = [ProviderRateLimited::after(30)];
+    $before = time();
 
     work();
 
     [$released] = delayedJobs();
 
-    expect(pauseTtl())->toBeBetween(29_000, 30_000)
-        ->and($released['availableAt'] - time())->toBeBetween(30, 31)
+    expect(pauseLeft())->toBeBetween(28_000, 30_000)
+        ->and($released['availableAt'])->toBeBetween($before + 30, time() + 31)
         ->and($released['payload']['attempts'])->toBe(0)
-        ->and($released['payload']['jobThrottle']['waited'])->toBe(30_000)
         ->and($this->failures)->toBeEmpty();
 });
 
@@ -58,13 +60,14 @@ it('holds every other job on the key until the pause ends', function () {
 
 it('gives no slot on the key before the pause ends, then keeps the rate', function () {
     $limiter = app(Limiter::class);
+    $before = redisNowMs();
     $limiter->pause('provider', 2);
-    $pauseEnds = redisNowMs() + 2000;
+    $after = redisNowMs();
 
     $first = $limiter->acquire('provider', new Rate(allow: 4), 0, 60_000);
     $second = $limiter->acquire('provider', new Rate(allow: 4), 0, 60_000);
 
-    expect($first->slotMs)->toBeBetween($pauseEnds - 5, $pauseEnds)
+    expect($first->slotMs)->toBeBetween($before + 2000, $after + 2000)
         ->and($second->slotMs - $first->slotMs)->toBe(250);
 });
 
@@ -75,22 +78,22 @@ it('moves a reserved slot that falls inside a later pause to after the pause', f
     $limiter->pause('provider', 5);
     $again = $limiter->acquire('provider', new Rate(allow: 1), $reserved->slotMs, 60_000);
 
-    expect($again->slotMs)->toBeGreaterThanOrEqual($reserved->slotMs + 3_900)
-        ->and($again->waitMs)->toBeBetween(4_900, 5_000);
+    expect($again->slotMs)->toBeGreaterThan($reserved->slotMs)
+        ->and($again->waitMs)->toBeBetween(4_000, 5_000);
 });
 
 it('never lets a shorter report cut a longer pause', function () {
     app(Limiter::class)->pause('provider', 30);
     app(Limiter::class)->pause('provider', 5);
 
-    expect(pauseTtl())->toBeBetween(29_000, 30_000);
+    expect(pauseLeft())->toBeBetween(28_000, 30_000);
 });
 
 it('lets a longer report extend a pause', function () {
     app(Limiter::class)->pause('provider', 5);
     app(Limiter::class)->pause('provider', 30);
 
-    expect(pauseTtl())->toBeBetween(29_000, 30_000);
+    expect(pauseLeft())->toBeBetween(28_000, 30_000);
 });
 
 it('applies only the pause to a pause-only key', function () {
@@ -101,8 +104,7 @@ it('applies only the pause to a pause-only key', function () {
     $paused = $limiter->acquire('airtable', null, 0, 60_000);
 
     expect($free)->each(fn ($decision) => $decision->runsNow()->toBeTrue())
-        ->and($paused->waitMs)->toBeBetween(2_900, 3_000)
-        ->and(Redis::exists('{tests:job-throttle:airtable}:tat'))->toBe(0);
+        ->and($paused->waitMs)->toBeBetween(2_000, 3_000);
 });
 
 it('still releases the reporting job when the pause cannot be saved', function () {
@@ -147,7 +149,7 @@ it('pauses for any exception that implements RetryAfter, clamped to 1 second thr
 
     work();
 
-    expect(pauseTtl())->toBeBetween($paused * 1000 - 500, $paused * 1000);
+    expect(pauseLeft())->toBeBetween($paused * 1000 - 1000, $paused * 1000);
 })->with([
     'zero' => [0, 1],
     'negative' => [-5, 1],

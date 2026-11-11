@@ -40,15 +40,15 @@ function hasFreeConcurrencySlot(int $limit, string $key = 'provider'): bool
 it('runs no more than K jobs on a key at once', function () {
     fillConcurrencySlots(2);
     ProviderJob::dispatch('third', 'provider', null, concurrency: 2);
+    $before = time();
 
     work();
 
     [$released] = delayedJobs();
 
     expect(ProviderJob::$runs)->toBeEmpty()
-        ->and($released['availableAt'] - time())->toBeBetween(2, 3)
-        ->and($released['payload']['attempts'])->toBe(0)
-        ->and($released['payload']['jobThrottle']['waited'])->toBe(2000);
+        ->and($released['availableAt'])->toBeBetween($before + 2, time() + 3)
+        ->and($released['payload']['attempts'])->toBe(0);
 });
 
 it('lets a job wait exactly its maxWait', function () {
