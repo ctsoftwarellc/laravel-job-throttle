@@ -17,13 +17,13 @@ function work(int $tries = 0): void
 }
 
 /**
- * Work every ready job once.
+ * Work every job that is ready, including released jobs whose delay has passed.
  */
 function workAll(): void
 {
-    while (Redis::llen('queues:default') > 0) {
+    do {
         work();
-    }
+    } while (Redis::llen('queues:default') > 0);
 }
 
 /**
