@@ -10,6 +10,8 @@ use Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob;
 use Ctsoftwarellc\JobThrottle\Support\PayloadRelease;
 use Ctsoftwarellc\JobThrottle\Testing\FakeLimiter;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
+use Illuminate\Queue\WorkerOptions;
+use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\AssertionFailedError;
 use Symfony\Component\Process\Process;
 
@@ -46,7 +48,7 @@ it('swaps the Redis limiter for a fake that needs no Redis', function () {
 });
 
 it('releases a job on a full key for the wait the test sets', function () {
-    JobThrottle::fake()->full('quo-sms:42', for: 3);
+    JobThrottle::fake()->rateLimited('quo-sms:42', for: 3);
 
     runThrottled(smsJob())->assertReleased(3);
 
@@ -76,7 +78,7 @@ it('records the pause a provider 429 asks for and holds the next job on the key'
 });
 
 it('fails a job whose wait would pass maxWait', function () {
-    JobThrottle::fake()->full('quo-sms:42', for: 120);
+    JobThrottle::fake()->rateLimited('quo-sms:42', for: 120);
 
     runThrottled(new ProviderJob('sms', 'quo-sms:42', allow: 8, maxWait: 60))
         ->assertFailedWith(ThrottleWaitExceeded::class)
@@ -85,7 +87,7 @@ it('fails a job whose wait would pass maxWait', function () {
 
 it('explains a failed assertion', function (Closure $assertion, string $message) {
     $fake = JobThrottle::fake();
-    $fake->full('quo-sms:42', for: 3);
+    $fake->rateLimited('quo-sms:42', for: 3);
     ProviderJob::$failures = [ProviderRateLimited::after(5)];
     $fake->acquire('quo-sms:42', null, 0, 60_000);
     runThrottled(new ProviderJob('sms', 'quo-sms:9', allow: 8));
@@ -158,4 +160,26 @@ it('lets a job with a concurrency limit run under the fake', function () {
     runThrottled(new ProviderJob('sms', 'quo-sms:42', allow: 8, concurrency: 2))->assertNotReleased();
 
     expect(ProviderJob::$runs)->toBe(['sms']);
+});
+
+it('releases a job on a key whose concurrency slots are all taken', function () {
+    JobThrottle::fake()->concurrencyFull('quo-sms:42');
+
+    runThrottled(new ProviderJob('sms', 'quo-sms:42', allow: 8, concurrency: 2))->assertReleased(2);
+
+    expect(ProviderJob::$runs)->toBeEmpty();
+    JobThrottle::assertThrottled('quo-sms:42');
+});
+
+it('counts waits toward maxWait under the fake on a queue that cannot carry them in the payload', function () {
+    $this->loadLaravelMigrations();
+    JobThrottle::fake()->rateLimited('provider', for: 10);
+    ProviderJob::dispatch('patient', 'provider', maxWait: 15)->onConnection('database');
+    $work = fn () => app('queue.worker')->runNextJob('database', 'default', new WorkerOptions(timeout: 0, sleep: 0, maxTries: 0));
+
+    $work();
+    DB::table('jobs')->update(['available_at' => time(), 'reserved_at' => null]);
+    $work();
+
+    expect($this->failures[0])->toBeInstanceOf(ThrottleWaitExceeded::class);
 });

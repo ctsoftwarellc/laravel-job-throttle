@@ -180,7 +180,7 @@ use Ctsoftwarellc\JobThrottle\Exceptions\ProviderRateLimited;
 use Ctsoftwarellc\JobThrottle\Facades\JobThrottle;
 
 it('waits for the next free slot', function () {
-    JobThrottle::fake()->full('sms:42', for: 3);
+    JobThrottle::fake()->rateLimited('sms:42', for: 3);
     $job = (new SendSms(42, '+15550100'))->withFakeQueueInteractions();
 
     (new ThrottleJob('sms:42', allow: 8))->handle($job, fn ($job) => $job->handle());
@@ -203,8 +203,9 @@ it('pauses the tenant when the provider answers 429', function () {
 
 | Fake | |
 |---|---|
-| `->full($key, for: $seconds)` | The key's rate is used up: a job on it waits `$seconds`. |
-| `->paused($key, for: $seconds)` | The key is paused, as after a 429. |
+| `->rateLimited($key, for: $seconds)` | The key's rate is used up: a job on it waits `$seconds` for its slot. |
+| `->paused($key, for: $seconds)` | The key is paused, as after a 429: a job on it waits `$seconds`. |
+| `->concurrencyFull($key)` | Every concurrency slot on the key is taken: a job on it waits `concurrency_retry` seconds. |
 | `JobThrottle::assertThrottled(?$key)` / `assertNotThrottled(?$key)` | A job had to wait, on the key or on any key. |
 | `JobThrottle::assertPaused($key, ?$seconds)` / `assertNotPaused(?$key)` | A job reported a 429 on the key. |
 

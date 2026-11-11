@@ -19,8 +19,11 @@ final class FakeLimiter implements Limiter
     /** @var array<string, int> seconds a job on the key has to wait */
     private array $waits = [];
 
-    /** @var list<array{key: string, waitMs: int}> */
-    private array $decisions = [];
+    /** @var array<string, true> keys whose concurrency slots are all taken */
+    private array $full = [];
+
+    /** @var list<string> the key of every wait, in order */
+    private array $throttled = [];
 
     /** @var list<array{key: string, seconds: int}> */
     private array $pauses = [];
@@ -29,13 +32,11 @@ final class FakeLimiter implements Limiter
     private array $states = [];
 
     /**
-     * Use up the key's rate: a job on it waits the given seconds.
+     * Use up the key's rate: a job on it waits the given seconds for its slot.
      */
-    public function full(string $key, int $for): self
+    public function rateLimited(string $key, int $for): self
     {
-        $this->waits[$key] = $for;
-
-        return $this;
+        return $this->waitOn($key, $for);
     }
 
     /**
@@ -43,7 +44,15 @@ final class FakeLimiter implements Limiter
      */
     public function paused(string $key, int $for): self
     {
-        $this->waits[$key] = max($this->waits[$key] ?? 0, $for);
+        return $this->waitOn($key, $for);
+    }
+
+    /**
+     * Take every concurrency slot on the key: a job on it waits concurrency_retry seconds.
+     */
+    public function concurrencyFull(string $key): self
+    {
+        $this->full[$key] = true;
 
         return $this;
     }
@@ -51,11 +60,12 @@ final class FakeLimiter implements Limiter
     public function acquire(string $key, ?Rate $rate, int $reservedSlotMs, int $budgetMs, bool $reserve = true): Decision
     {
         $waitMs = ($this->waits[$key] ?? 0) * 1000;
-        $decision = new Decision($waitMs > $budgetMs ? -1 : $waitMs);
 
-        $this->decisions[] = ['key' => $key, 'waitMs' => $decision->waitMs];
+        if ($waitMs > 0) {
+            $this->throttled[] = $key;
+        }
 
-        return $decision;
+        return new Decision($waitMs > $budgetMs ? -1 : $waitMs);
     }
 
     public function pause(string $key, int $seconds): void
@@ -65,12 +75,15 @@ final class FakeLimiter implements Limiter
         $this->paused($key, $seconds);
     }
 
-    /**
-     * @return Closure(): void
-     */
-    public function enter(string $key, int $limit, int $ttlSeconds): Closure
+    public function enter(string $key, int $limit, int $ttlSeconds): ?Closure
     {
-        return fn () => null;
+        if (isset($this->full[$key])) {
+            $this->throttled[] = $key;
+
+            return null;
+        }
+
+        return static function (): void {};
     }
 
     public function state(string $jobUuid): ThrottleState
@@ -86,14 +99,14 @@ final class FakeLimiter implements Limiter
     public function assertThrottled(?string $key = null): void
     {
         PHPUnit::assertNotEmpty(
-            $this->throttled($key),
+            $this->throttledOn($key),
             $key === null ? 'No job was throttled.' : "No job was throttled on key [{$key}].",
         );
     }
 
     public function assertNotThrottled(?string $key = null): void
     {
-        $keys = array_column($this->throttled($key), 'key');
+        $keys = $this->throttledOn($key);
 
         PHPUnit::assertEmpty($keys, 'Jobs were throttled on keys ['.implode(', ', array_unique($keys)).'].');
     }
@@ -116,14 +129,18 @@ final class FakeLimiter implements Limiter
         PHPUnit::assertEmpty($keys, 'The keys ['.implode(', ', array_unique($keys)).'] were paused.');
     }
 
-    /**
-     * @return list<array{key: string, waitMs: int}>
-     */
-    private function throttled(?string $key): array
+    private function waitOn(string $key, int $seconds): self
     {
-        return array_values(array_filter(
-            $this->decisions,
-            fn (array $decision) => $decision['waitMs'] !== 0 && ($key === null || $decision['key'] === $key),
-        ));
+        $this->waits[$key] = max($this->waits[$key] ?? 0, $seconds);
+
+        return $this;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function throttledOn(?string $key): array
+    {
+        return array_values(array_filter($this->throttled, fn (string $throttled) => $key === null || $throttled === $key));
     }
 }

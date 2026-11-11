@@ -86,7 +86,7 @@ it('takes the limit and mailer from the constructor over config', function () {
 });
 
 it('throttles a mailer without config when the constructor sets a limit', function () {
-    JobThrottle::fake()->full('mail:array', for: 1);
+    JobThrottle::fake()->rateLimited('mail:array', for: 1);
     $job = (new SendQueuedNotifications(new AnonymousNotifiable, new OrderShipped))->withFakeQueueInteractions();
 
     (new ThrottleMail(maxAttempts: 1))->handle($job, fn () => OrderShipped::$sent[] = 'sent');
