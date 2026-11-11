@@ -13,10 +13,12 @@ use Ctsoftwarellc\JobThrottle\Support\PayloadRelease;
 use Ctsoftwarellc\JobThrottle\Support\Rate;
 use Ctsoftwarellc\JobThrottle\Support\ThrottleState;
 use Illuminate\Contracts\Queue\Job;
+use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\Jobs\RedisJob;
 use Illuminate\Queue\Jobs\SyncJob;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
+use LogicException;
 use Throwable;
 
 final class ThrottleJob
@@ -57,7 +59,7 @@ final class ThrottleJob
     {
         $queueJob = $this->queueJobOf($job);
 
-        // Run inline: releasing a sync or unqueued job would drop it.
+        // Run inline: releasing a sync job would drop it.
         if ($queueJob === null) {
             return $next($job);
         }
@@ -96,8 +98,21 @@ final class ThrottleJob
         return $this->key instanceof Closure ? ($this->key)($job) : $this->key;
     }
 
+    /**
+     * The queue job to release, or null when the job runs without a queue.
+     */
     private function queueJobOf(object $job): ?Job
     {
+        // Laravel hands the queue job only to jobs with this trait. Without it the job could never be released.
+        if (! isset(class_uses_recursive($job)[InteractsWithQueue::class])) {
+            throw new LogicException(sprintf(
+                'The job throttle cannot release [%s] because it does not use the %s trait. Add it, or use Laravel\'s %s trait, which includes it.',
+                $job::class,
+                InteractsWithQueue::class,
+                'Illuminate\Foundation\Queue\Queueable',
+            ));
+        }
+
         $queueJob = property_exists($job, 'job') ? $job->job : null;
 
         return $queueJob instanceof Job && ! $queueJob instanceof SyncJob ? $queueJob : null;

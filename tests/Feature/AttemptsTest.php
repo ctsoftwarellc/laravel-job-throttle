@@ -11,6 +11,7 @@ use Ctsoftwarellc\JobThrottle\Support\Rate;
 use Ctsoftwarellc\JobThrottle\Support\RedisLimiter;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\UniqueProviderJob;
+use Illuminate\Bus\Queueable;
 use Illuminate\Bus\UniqueLock;
 use Illuminate\Queue\LuaScripts;
 use Illuminate\Redis\Events\CommandExecuted;
@@ -181,6 +182,19 @@ it('runs a dispatchSync job once, without throttling it', function () {
     ProviderJob::dispatchSync('sync', 'provider', 1, 10);
 
     expect(ProviderJob::$runs)->toBe(['first', 'sync']);
+});
+
+it('refuses a job without InteractsWithQueue instead of running it unthrottled', function () {
+    $job = new class
+    {
+        use Queueable;
+
+        public bool $ran = false;
+    };
+
+    expect(fn () => (new ThrottleJob('provider', allow: 1))->handle($job, fn () => $job->ran = true))
+        ->toThrow(LogicException::class, 'The job throttle cannot release ['.$job::class.'] because it does not use the Illuminate\\Queue\\InteractsWithQueue trait.')
+        ->and($job->ran)->toBeFalse();
 });
 
 it('runs a job that throws only once', function () {
