@@ -20,7 +20,7 @@ final class RedisLimiter implements Limiter
     public function acquire(string $key, ?Rate $rate, int $reservedSlotMs, int $budgetMs, bool $reserve = true): Decision
     {
         /** @var array{int, int} $result */
-        $result = $this->evaluate($key, ['acquire', $rate->emissionMs ?? 0, $reservedSlotMs, $budgetMs, (int) $reserve]);
+        $result = $this->evaluate($key, ['acquire', $rate->emissionMs ?? 0, $reservedSlotMs, $budgetMs, (int) $reserve, $rate->allow ?? 0, ($rate->every ?? 0) * 1000]);
 
         return new Decision(waitMs: $result[0], slotMs: $result[1]);
     }

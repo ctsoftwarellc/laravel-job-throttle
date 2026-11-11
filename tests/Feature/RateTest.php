@@ -201,3 +201,19 @@ it('prefixes its Redis keys with the key prefix, then the cache prefix, then the
     'app name' => [['cache.prefix' => '', 'app.name' => 'Shop'], 'Shop'],
     'nothing set' => [['cache.prefix' => '', 'app.name' => ''], 'laravel'],
 ]);
+
+it('applies a multi-second sliding window through the limiter to returning jobs', function () {
+    $rate = new Rate(allow: 7, every: 2);
+    $limiter = app(Limiter::class);
+    $before = redisNowMs();
+
+    foreach (range(1, 7) as $i) {
+        expect($limiter->acquire('provider', $rate, $before - 5000 - $i, 60_000)->runsNow())->toBeTrue();
+    }
+
+    $eighth = $limiter->acquire('provider', $rate, $before - 6000, 60_000);
+    $after = redisNowMs();
+
+    expect($eighth->waitMs)->toBeGreaterThan(0)
+        ->and($eighth->slotMs)->toBeBetween($before + 2000, $after + 2000);
+});
