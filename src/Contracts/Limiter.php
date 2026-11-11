@@ -13,9 +13,10 @@ interface Limiter
     /**
      * Reserve the next slot on the key, or confirm the slot the job already holds.
      *
-     * A null rate applies only the provider pause.
+     * A null rate applies only the provider pause. Without $reserve a job that has to
+     * wait takes no slot: it cannot carry a reservation back, so it asks again later.
      */
-    public function acquire(string $key, ?Rate $rate, int $reservedSlotMs, int $budgetMs): Decision;
+    public function acquire(string $key, ?Rate $rate, int $reservedSlotMs, int $budgetMs, bool $reserve = true): Decision;
 
     /**
      * Hold every job on the key for the given seconds. A shorter pause never cuts a longer one.

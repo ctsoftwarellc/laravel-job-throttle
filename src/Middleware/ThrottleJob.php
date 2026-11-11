@@ -13,6 +13,7 @@ use Ctsoftwarellc\JobThrottle\Support\PayloadRelease;
 use Ctsoftwarellc\JobThrottle\Support\Rate;
 use Ctsoftwarellc\JobThrottle\Support\ThrottleState;
 use Illuminate\Contracts\Queue\Job;
+use Illuminate\Queue\Jobs\RedisJob;
 use Illuminate\Queue\Jobs\SyncJob;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
@@ -120,7 +121,13 @@ final class ThrottleJob
         }
 
         try {
-            $decision = $limiter->acquire($key, $this->rate, $reservedSlot, max(0, $this->maxWaitMs() - $state->waitedMs));
+            $decision = $limiter->acquire(
+                $key,
+                $this->rate,
+                $reservedSlot,
+                max(0, $this->maxWaitMs() - $state->waitedMs),
+                reserve: $queueJob instanceof RedisJob,
+            );
         } catch (Throwable $e) {
             $this->leave($leave);
 

@@ -102,7 +102,7 @@ it('logs a slot that cannot be freed and keeps the job\'s own exception', functi
     });
     app()->instance(Limiter::class, new class implements Limiter
     {
-        public function acquire(string $key, ?Rate $rate, int $reservedSlotMs, int $budgetMs): Decision
+        public function acquire(string $key, ?Rate $rate, int $reservedSlotMs, int $budgetMs, bool $reserve = true): Decision
         {
             return new Decision(0);
         }

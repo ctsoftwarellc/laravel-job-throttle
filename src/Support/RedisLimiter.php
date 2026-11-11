@@ -17,10 +17,10 @@ final class RedisLimiter implements Limiter
 {
     public function __construct(private readonly Redis $redis) {}
 
-    public function acquire(string $key, ?Rate $rate, int $reservedSlotMs, int $budgetMs): Decision
+    public function acquire(string $key, ?Rate $rate, int $reservedSlotMs, int $budgetMs, bool $reserve = true): Decision
     {
         /** @var array{int, int} $result */
-        $result = $this->evaluate($key, 'acquire', $rate->emissionMs ?? 0, $reservedSlotMs, $budgetMs);
+        $result = $this->evaluate($key, 'acquire', $rate->emissionMs ?? 0, $reservedSlotMs, $budgetMs, (int) $reserve);
 
         return new Decision(waitMs: $result[0], slotMs: $result[1]);
     }

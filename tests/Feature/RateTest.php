@@ -7,7 +7,9 @@ use Ctsoftwarellc\JobThrottle\Support\Decision;
 use Ctsoftwarellc\JobThrottle\Support\Rate;
 use Ctsoftwarellc\JobThrottle\Support\RedisLimiter;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
+use Illuminate\Queue\WorkerOptions;
 use Illuminate\Redis\RedisManager;
+use Illuminate\Support\Facades\DB;
 
 mutates(RedisLimiter::class);
 
@@ -124,3 +126,17 @@ it('throttles queued jobs on a key to the rate across the queue', function () {
 it('rejects a rate below one job per second', function (int $allow, int $every) {
     new Rate($allow, $every);
 })->with([[0, 1], [1, 0]])->throws(InvalidArgumentException::class, 'A throttle rate needs at least 1 job per 1 second, [');
+
+it('lets a job on a queue without refunds wait without reserving, so a backlog cannot starve the key', function () {
+    $this->loadLaravelMigrations();
+    $rate = new Rate(allow: 1, every: 10);
+    app(Limiter::class)->acquire('provider', $rate, 0, 3_600_000);
+
+    ProviderJob::dispatch('on database', 'provider', 1, 10)->onConnection('database');
+    app('queue.worker')->runNextJob('database', 'default', new WorkerOptions(timeout: 0, sleep: 0, maxTries: 0));
+    $next = app(Limiter::class)->acquire('provider', $rate, 0, 3_600_000);
+
+    expect(ProviderJob::$runs)->toBeEmpty()
+        ->and(DB::table('jobs')->value('attempts'))->toBe(1)
+        ->and($next->waitMs)->toBeBetween(9_900, 10_000);
+});

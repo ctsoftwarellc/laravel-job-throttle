@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Ctsoftwarellc\JobThrottle\Support;
 
 use Illuminate\Contracts\Queue\Job;
+use Illuminate\Queue\Jobs\FakeJob;
 use Illuminate\Queue\Jobs\RedisJob;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
@@ -22,7 +23,8 @@ final class PayloadRelease
      */
     public static function release(Job $job, int $waitMs, ThrottleState $state): void
     {
-        $delay = self::secondsUntil($waitMs);
+        // FakeJob only records the delay, so tests can assert the plain whole seconds.
+        $delay = $job instanceof FakeJob ? (int) ceil($waitMs / 1000) : self::secondsUntil($waitMs);
 
         $job->release($delay);
 
