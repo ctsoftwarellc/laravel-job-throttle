@@ -26,6 +26,8 @@ final class PayloadRelease
         // FakeJob only records the delay, so tests can assert the plain whole seconds.
         $delay = $job instanceof FakeJob ? (int) ceil($waitMs / 1000) : self::secondsUntil($waitMs);
 
+        // ponytail: release, then rewrite, is two Redis calls. A worker that pops the job in
+        // between costs one try, never a second run. An atomic refunding release needs a RedisQueue subclass.
         $job->release($delay);
 
         if (! $job instanceof RedisJob) {

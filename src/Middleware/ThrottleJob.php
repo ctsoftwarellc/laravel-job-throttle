@@ -116,6 +116,7 @@ final class ThrottleJob
         if ($this->concurrency !== null) {
             $leave = $limiter->enter($key, $this->concurrency, ($queueJob->timeout() ?? 60) + 60);
 
+            // ponytail: a full funnel polls every concurrency_retry seconds; a Lua wait list would end the polling.
             if ($leave === null) {
                 return [$this->decisionFor(config()->integer('job-throttle.concurrency_retry') * 1000, $reservedSlot, $state), null];
             }
