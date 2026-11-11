@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 use Ctsoftwarellc\JobThrottle\Concerns\ThrottlesMail;
 use Ctsoftwarellc\JobThrottle\Facades\JobThrottle;
-use Ctsoftwarellc\JobThrottle\Mail\ThrottleMail;
+use Ctsoftwarellc\JobThrottle\Middleware\ThrottleMail;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\OrderShipped;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\SendQueuedMailable;

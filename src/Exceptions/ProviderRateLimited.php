@@ -19,6 +19,9 @@ final class ProviderRateLimited extends RuntimeException implements RetryAfter
         parent::__construct("The provider rate limited the request. Retry after {$seconds} seconds.");
     }
 
+    /**
+     * Pause the key for the given seconds, clamped to 1 second through 24 hours.
+     */
     public static function after(int $seconds): self
     {
         return new self($seconds);

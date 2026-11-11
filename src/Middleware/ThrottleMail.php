@@ -2,10 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Ctsoftwarellc\JobThrottle\Mail;
+namespace Ctsoftwarellc\JobThrottle\Middleware;
 
 use Closure;
-use Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob;
 use Illuminate\Mail\Mailable;
 use Illuminate\Notifications\Notification;
 

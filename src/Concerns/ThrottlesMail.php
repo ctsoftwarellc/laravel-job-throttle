@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Ctsoftwarellc\JobThrottle\Concerns;
 
-use Ctsoftwarellc\JobThrottle\Mail\ThrottleMail;
+use Ctsoftwarellc\JobThrottle\Middleware\ThrottleMail;
 
 /**
  * Throttles a queued notification or mailable to its mailer's rate limit in config/mail.php:

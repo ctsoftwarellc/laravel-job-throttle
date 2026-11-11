@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Ctsoftwarellc\JobThrottle\Facades;
 
 use Ctsoftwarellc\JobThrottle\Contracts\Limiter;
-use Ctsoftwarellc\JobThrottle\Mail\ThrottleMail;
 use Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob;
+use Ctsoftwarellc\JobThrottle\Middleware\ThrottleMail;
 use Ctsoftwarellc\JobThrottle\Testing\FakeLimiter;
 use Illuminate\Support\Facades\Facade;
 
