@@ -33,7 +33,10 @@
     "autoload": {
         "psr-4": {
             "Ctsoftwarellc\\JobThrottle\\": "src/"
-        }
+        },
+        "files": [
+            "src/Testing/pest.php"
+        ]
     },
     "autoload-dev": {
         "psr-4": {
