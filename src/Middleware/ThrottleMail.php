@@ -17,26 +17,31 @@ final class ThrottleMail
      * @param  int|null  $maxAttempts  overrides the mailer's rate_limit
      * @param  int|null  $perSeconds  overrides the mailer's rate_limit_per
      * @param  string|null  $mailer  the mailer to throttle against, instead of the job's own
+     * @param  string|null  $channel  the notification channel the job sends on; only `mail` is throttled
      */
     public function __construct(
         private readonly ?int $maxAttempts = null,
         private readonly ?int $perSeconds = null,
         private readonly ?string $mailer = null,
+        private readonly ?string $channel = null,
     ) {}
 
-    public function handle(object $job, Closure $next, ?string $channel = null): mixed
+    public function handle(object $job, Closure $next): mixed
     {
-        // As notification middleware, only the mail channel is throttled.
-        $throttle = $channel === null || $channel === 'mail' ? $this->throttleFor($job) : null;
+        $throttle = $this->throttleFor($job);
 
         return $throttle === null ? $next($job) : $throttle->handle($job, $next);
     }
 
     /**
-     * The throttle for the job's mailer, or null when the mailer has no rate limit.
+     * The throttle for the job's mailer, or null when the job sends no mail or the mailer has no rate limit.
      */
     public function throttleFor(object $job): ?ThrottleJob
     {
+        if ($this->channel !== null && $this->channel !== 'mail') {
+            return null;
+        }
+
         $mailer = $this->mailerFor($job);
         $config = config()->array("mail.mailers.{$mailer}", []);
         $allow = $this->maxAttempts ?? $this->integer($config['rate_limit'] ?? null);

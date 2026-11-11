@@ -16,12 +16,14 @@ use Ctsoftwarellc\JobThrottle\Middleware\ThrottleMail;
 trait ThrottlesMail
 {
     /**
+     * Laravel passes the notifiable and the channel for each channel of a queued notification.
+     *
      * @return array<int, object>
      */
-    public function middleware(): array
+    public function middleware(?object $notifiable = null, ?string $channel = null): array
     {
         return [
-            new ThrottleMail,
+            new ThrottleMail(channel: $channel),
             ...$this->additionalMiddleware(),
         ];
     }

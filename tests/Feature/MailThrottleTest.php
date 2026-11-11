@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Ctsoftwarellc\JobThrottle\Concerns\ThrottlesMail;
 use Ctsoftwarellc\JobThrottle\Facades\JobThrottle;
 use Ctsoftwarellc\JobThrottle\Middleware\ThrottleMail;
+use Ctsoftwarellc\JobThrottle\Tests\Fixtures\Customer;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\OrderShipped;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\SendQueuedMailable;
@@ -94,18 +95,25 @@ it('throttles a mailer without config when the constructor sets a limit', functi
     $job->assertReleased(1);
 });
 
-it('throttles only the mail channel of a notification', function (string $channel, bool $throttled) {
+it('throttles only the mail channel of a queued notification', function () {
     config(['mail.mailers.array.rate_limit' => 1]);
-    JobThrottle::fake()->full('mail:array', for: 1);
-    $job = (new SendQueuedNotifications(new AnonymousNotifiable, new OrderShipped))->withFakeQueueInteractions();
+    Notification::extend('database', fn () => new class
+    {
+        public function send(object $notifiable, OrderShipped $notification): void
+        {
+            OrderShipped::$sent[] = 'database';
+        }
+    });
 
-    (new ThrottleMail)->handle($job, fn () => OrderShipped::$sent[] = 'sent', $channel);
+    foreach (range(1, 2) as $order) {
+        (new Customer("customer-{$order}@example.com"))->notify(new OrderShipped(channels: ['mail', 'database']));
+    }
 
-    expect(OrderShipped::$sent === [])->toBe($throttled);
-})->with([
-    'mail' => ['mail', true],
-    'database' => ['database', false],
-]);
+    workAll();
+
+    expect(OrderShipped::$sent)->toBe(['default', 'database', 'database'])
+        ->and(delayedJobs())->toHaveCount(1);
+});
 
 it('keeps the throttle first when a notification adds middleware', function () {
     $notification = new class extends Illuminate\Notifications\Notification

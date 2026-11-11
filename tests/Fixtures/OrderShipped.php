@@ -20,14 +20,17 @@ final class OrderShipped extends Notification implements ShouldQueue
     /** @var list<string> */
     public static array $sent = [];
 
-    public function __construct(public ?string $mailer = null) {}
+    /**
+     * @param  list<string>  $channels
+     */
+    public function __construct(public ?string $mailer = null, public array $channels = ['mail']) {}
 
     /**
      * @return list<string>
      */
     public function via(object $notifiable): array
     {
-        return ['mail'];
+        return $this->channels;
     }
 
     public function toMail(object $notifiable): MailMessage
