@@ -21,10 +21,16 @@ final readonly class ThrottleState
         public array $slots = [],
     ) {}
 
+    /**
+     * The state a Redis queue job carries in its payload.
+     */
     public static function of(Job $job): self
     {
-        $state = $job->payload()['jobThrottle'] ?? null;
+        return self::fromArray($job->payload()['jobThrottle'] ?? null);
+    }
 
+    public static function fromArray(mixed $state): self
+    {
         if (! is_array($state)) {
             return new self;
         }

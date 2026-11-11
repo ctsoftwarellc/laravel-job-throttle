@@ -6,17 +6,21 @@ use Ctsoftwarellc\JobThrottle\Contracts\Limiter;
 use Ctsoftwarellc\JobThrottle\Exceptions\ProviderRateLimited;
 use Ctsoftwarellc\JobThrottle\Exceptions\ThrottleWaitExceeded;
 use Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob;
+use Ctsoftwarellc\JobThrottle\Support\Decision;
 use Ctsoftwarellc\JobThrottle\Support\PayloadRelease;
 use Ctsoftwarellc\JobThrottle\Support\Rate;
 use Ctsoftwarellc\JobThrottle\Support\RedisLimiter;
+use Ctsoftwarellc\JobThrottle\Support\ThrottleState;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\UniqueProviderJob;
 use Illuminate\Bus\Queueable;
 use Illuminate\Bus\UniqueLock;
 use Illuminate\Queue\LuaScripts;
+use Illuminate\Queue\WorkerOptions;
 use Illuminate\Redis\Events\CommandExecuted;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
@@ -120,6 +124,60 @@ it('counts every wait toward maxWait and reserves no slot it cannot use', functi
 
     expect($this->failures[0]->getMessage())->toBe('The job would wait past its 10 second limit on throttle key [provider]. It has already waited 6 seconds.')
         ->and(app(Limiter::class)->acquire('provider', new Rate(allow: 1), 0, 60_000)->waitMs)->toBeLessThanOrEqual(6000);
+});
+
+it('counts every wait toward maxWait on a queue that cannot carry it in the payload', function () {
+    $this->loadLaravelMigrations();
+    app(Limiter::class)->acquire('provider', new Rate(allow: 1, every: 10), 0, 3_600_000);
+    ProviderJob::dispatch('patient', 'provider', 1, 10, maxWait: 15)->onConnection('database');
+    $work = fn () => app('queue.worker')->runNextJob('database', 'default', new WorkerOptions(timeout: 0, sleep: 0, maxTries: 0));
+
+    $work();
+    DB::table('jobs')->update(['available_at' => time(), 'reserved_at' => null]);
+    $work();
+
+    expect(ProviderJob::$runs)->toBeEmpty()
+        ->and(DB::table('jobs')->count())->toBe(0)
+        ->and($this->failures[0])->toBeInstanceOf(ThrottleWaitExceeded::class)
+        ->and($this->failures[0]->getMessage())->toStartWith('The job would wait past its 15 second limit on throttle key [provider].');
+});
+
+it('logs a wait it cannot save and still releases the job', function () {
+    Log::spy();
+    $this->loadLaravelMigrations();
+    app()->instance(Limiter::class, new class implements Limiter
+    {
+        public function acquire(string $key, ?Rate $rate, int $reservedSlotMs, int $budgetMs, bool $reserve = true): Decision
+        {
+            return new Decision(5000);
+        }
+
+        public function pause(string $key, int $seconds): void {}
+
+        public function enter(string $key, int $limit, int $ttlSeconds): ?Closure
+        {
+            return null;
+        }
+
+        public function state(string $jobUuid): ThrottleState
+        {
+            return new ThrottleState;
+        }
+
+        public function remember(string $jobUuid, ThrottleState $state, int $ttlSeconds): void
+        {
+            throw new RedisException('Connection lost');
+        }
+    });
+    ProviderJob::dispatch('waiting')->onConnection('database');
+
+    app('queue.worker')->runNextJob('database', 'default', new WorkerOptions(timeout: 0, sleep: 0, maxTries: 0));
+
+    expect(ProviderJob::$runs)->toBeEmpty()
+        ->and($this->failures)->toBeEmpty()
+        ->and(DB::table('jobs')->value('available_at'))->toBeGreaterThan(time());
+    Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context) => $message === 'Job throttle could not save how long the job waited, so its maxWait starts again.'
+        && $context['exception']->getMessage() === 'Connection lost')->once();
 });
 
 it('keeps the unique lock, holds the chain and leaves the batch open while a job waits', function () {

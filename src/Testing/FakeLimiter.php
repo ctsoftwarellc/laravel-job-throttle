@@ -8,6 +8,7 @@ use Closure;
 use Ctsoftwarellc\JobThrottle\Contracts\Limiter;
 use Ctsoftwarellc\JobThrottle\Support\Decision;
 use Ctsoftwarellc\JobThrottle\Support\Rate;
+use Ctsoftwarellc\JobThrottle\Support\ThrottleState;
 use PHPUnit\Framework\Assert as PHPUnit;
 
 /**
@@ -23,6 +24,9 @@ final class FakeLimiter implements Limiter
 
     /** @var list<array{key: string, seconds: int}> */
     private array $pauses = [];
+
+    /** @var array<string, ThrottleState> by job uuid */
+    private array $states = [];
 
     /**
      * Use up the key's rate: a job on it waits the given seconds.
@@ -67,6 +71,16 @@ final class FakeLimiter implements Limiter
     public function enter(string $key, int $limit, int $ttlSeconds): Closure
     {
         return fn () => null;
+    }
+
+    public function state(string $jobUuid): ThrottleState
+    {
+        return $this->states[$jobUuid] ?? new ThrottleState;
+    }
+
+    public function remember(string $jobUuid, ThrottleState $state, int $ttlSeconds): void
+    {
+        $this->states[$jobUuid] = $state;
     }
 
     public function assertThrottled(?string $key = null): void

@@ -39,6 +39,18 @@ final class RedisLimiter implements Limiter
         return $slot === null ? null : fn () => $funnel->free($slot, $holder);
     }
 
+    public function state(string $jobUuid): ThrottleState
+    {
+        $state = $this->connection()->command('get', [$this->stateKey($jobUuid)]);
+
+        return ThrottleState::fromArray(is_string($state) ? json_decode($state, true) : null);
+    }
+
+    public function remember(string $jobUuid, ThrottleState $state, int $ttlSeconds): void
+    {
+        $this->connection()->command('setex', [$this->stateKey($jobUuid), $ttlSeconds, json_encode($state->toArray(), JSON_THROW_ON_ERROR)]);
+    }
+
     /**
      * @param  list<string|int>  $arguments
      */
@@ -62,6 +74,11 @@ final class RedisLimiter implements Limiter
     private function name(string $key): string
     {
         return '{'.$this->prefix().':job-throttle:'.$key.'}';
+    }
+
+    private function stateKey(string $jobUuid): string
+    {
+        return $this->prefix().':job-throttle-state:'.$jobUuid;
     }
 
     private function prefix(): string

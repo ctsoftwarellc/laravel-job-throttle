@@ -72,10 +72,11 @@ final class ThrottleJob
         }
 
         $key = $this->keyFor($job);
-        $state = ThrottleState::of($queueJob);
         $limiter = app(Limiter::class);
+        $state = new ThrottleState;
 
         try {
+            $state = $this->stateOf($limiter, $queueJob);
             [$decision, $leave] = $this->admit($limiter, $key, $queueJob, $state);
         } catch (Throwable $e) {
             $this->failOpen($e, $key);
@@ -84,7 +85,7 @@ final class ThrottleJob
         }
 
         if (! $decision->runsNow()) {
-            $this->wait($queueJob, $key, $decision, $state);
+            $this->wait($limiter, $queueJob, $key, $decision, $state);
 
             return null;
         }
@@ -178,7 +179,7 @@ final class ThrottleJob
     /**
      * Release the job for the wait without spending a try, or fail it once its waits pass maxWait.
      */
-    private function wait(Job $queueJob, string $key, Decision $decision, ThrottleState $state): void
+    private function wait(Limiter $limiter, Job $queueJob, string $key, Decision $decision, ThrottleState $state): void
     {
         if ($decision->waitMs < 0) {
             $queueJob->fail(ThrottleWaitExceeded::forKey($key, $state->waitedMs, $this->maxWaitSeconds()));
@@ -186,9 +187,37 @@ final class ThrottleJob
             return;
         }
 
-        $attempt = $queueJob->attempts();
+        $state = $state->after($key, $queueJob->attempts(), $decision->slotMs, $decision->waitMs);
 
-        PayloadRelease::release($queueJob, $decision->waitMs, $state->after($key, $attempt, $decision->slotMs, $decision->waitMs));
+        PayloadRelease::release($queueJob, $decision->waitMs, $state);
+
+        if (! $queueJob instanceof RedisJob && $queueJob->uuid() !== null) {
+            $this->remember($limiter, $queueJob->uuid(), $state, $decision->waitMs);
+        }
+    }
+
+    /**
+     * A Redis queue job carries its state in the payload. Other queues keep it in the throttle's Redis.
+     */
+    private function stateOf(Limiter $limiter, Job $queueJob): ThrottleState
+    {
+        if ($queueJob instanceof RedisJob || $queueJob->uuid() === null) {
+            return ThrottleState::of($queueJob);
+        }
+
+        return $limiter->state($queueJob->uuid());
+    }
+
+    /**
+     * Keep the state for as long as the job may still wait. Never throw: the job is already released.
+     */
+    private function remember(Limiter $limiter, string $uuid, ThrottleState $state, int $waitMs): void
+    {
+        try {
+            $limiter->remember($uuid, $state, $this->maxWaitSeconds() + intdiv($waitMs, 1000) + 1);
+        } catch (Throwable $e) {
+            Log::warning('Job throttle could not save how long the job waited, so its maxWait starts again.', ['uuid' => $uuid, 'exception' => $e]);
+        }
     }
 
     /**
@@ -204,7 +233,7 @@ final class ThrottleJob
             Log::warning('Job throttle could not pause the key, so only this job waits.', ['key' => $key, 'exception' => $e]);
         }
 
-        $this->wait($queueJob, $key, $this->decisionFor($seconds * 1000, 0, $state), $state);
+        $this->wait($limiter, $queueJob, $key, $this->decisionFor($seconds * 1000, 0, $state), $state);
     }
 
     /**

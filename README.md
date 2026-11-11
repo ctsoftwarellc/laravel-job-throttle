@@ -219,7 +219,7 @@ The expectation loads only when Pest is installed. In PHPUnit, use `JobThrottle:
 
 ## Limits
 
-- **Redis queues only get free waits.** On the database, SQS or another queue, a wait spends a try like a plain `release()`, and a waiting job takes no slot: it asks again when the next slot is free.
+- **Redis queues only get free waits.** On the database, SQS or another queue, a wait spends a try like a plain `release()`, and a waiting job takes no slot: it asks again when the next slot is free. `maxWait` still holds there: the throttle keeps the time each job waited in its own Redis, by the job's uuid, until the job can no longer wait.
 - **Whole seconds.** Laravel releases jobs in whole seconds, so jobs whose slots fall in the same second start together. The rate over each second holds.
 - **Late jobs keep the rate.** A job that comes back after its slot (a busy queue, a slow worker) runs at once if the key has room in the current second. Jobs that come back together after a worker outage do not all start at once: one second's worth starts, and the rest take new slots at the rate.
 - **Poll at least once a second.** A worker that sleeps 3 seconds between empty polls finds 3 seconds of released jobs at once, and only one second's worth may start. Run enough worker processes, or a short `--sleep`, that a released job is picked up in the second it becomes due.

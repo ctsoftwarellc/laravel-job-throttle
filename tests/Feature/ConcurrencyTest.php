@@ -9,6 +9,7 @@ use Ctsoftwarellc\JobThrottle\Support\Funnel;
 use Ctsoftwarellc\JobThrottle\Support\PayloadRelease;
 use Ctsoftwarellc\JobThrottle\Support\Rate;
 use Ctsoftwarellc\JobThrottle\Support\RedisLimiter;
+use Ctsoftwarellc\JobThrottle\Support\ThrottleState;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
 use Illuminate\Queue\Events\JobExceptionOccurred;
 use Illuminate\Redis\Limiters\ConcurrencyLimiter;
@@ -105,6 +106,13 @@ it('keeps an unfreed slot past any worker timeout before it expires', function (
 
         public function pause(string $key, int $seconds): void {}
 
+        public function state(string $jobUuid): ThrottleState
+        {
+            return new ThrottleState;
+        }
+
+        public function remember(string $jobUuid, ThrottleState $state, int $ttlSeconds): void {}
+
         public function enter(string $key, int $limit, int $ttlSeconds): ?Closure
         {
             $this->lockedFor = $ttlSeconds;
@@ -157,6 +165,13 @@ it('frees the slot when the rate limiter fails after the slot was taken', functi
 
         public function pause(string $key, int $seconds): void {}
 
+        public function state(string $jobUuid): ThrottleState
+        {
+            return new ThrottleState;
+        }
+
+        public function remember(string $jobUuid, ThrottleState $state, int $ttlSeconds): void {}
+
         public function enter(string $key, int $limit, int $ttlSeconds): ?Closure
         {
             return function () {
@@ -195,6 +210,13 @@ it('logs a slot that cannot be freed and keeps the job\'s own exception', functi
         }
 
         public function pause(string $key, int $seconds): void {}
+
+        public function state(string $jobUuid): ThrottleState
+        {
+            return new ThrottleState;
+        }
+
+        public function remember(string $jobUuid, ThrottleState $state, int $ttlSeconds): void {}
 
         public function enter(string $key, int $limit, int $ttlSeconds): ?Closure
         {

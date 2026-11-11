@@ -7,6 +7,7 @@ namespace Ctsoftwarellc\JobThrottle\Contracts;
 use Closure;
 use Ctsoftwarellc\JobThrottle\Support\Decision;
 use Ctsoftwarellc\JobThrottle\Support\Rate;
+use Ctsoftwarellc\JobThrottle\Support\ThrottleState;
 
 interface Limiter
 {
@@ -29,4 +30,14 @@ interface Limiter
      * @return (Closure(): void)|null frees the slot, or null when every slot is taken
      */
     public function enter(string $key, int $limit, int $ttlSeconds): ?Closure;
+
+    /**
+     * The throttle state of a job on a queue that cannot carry it in the payload.
+     */
+    public function state(string $jobUuid): ThrottleState;
+
+    /**
+     * Keep the job's throttle state for its next try, on a queue that cannot carry it in the payload.
+     */
+    public function remember(string $jobUuid, ThrottleState $state, int $ttlSeconds): void;
 }
