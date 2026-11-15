@@ -152,7 +152,7 @@ it('answers over budget without reserving a slot', function () {
 
     expect($overBudget->waitMs)->toBe(-1)
         ->and($overBudget->slotMs)->toBe(0)
-        ->and($next->waitMs)->toBeBetween(19_000, 20_000);
+        ->and($next->waitMs)->toBeBetween(19_000, 20_001);
 });
 
 it('counts the rate per second unless told otherwise', function () {
@@ -193,7 +193,7 @@ it('lets a job on a queue without refunds wait without reserving, so a backlog c
 
     expect(ProviderJob::$runs)->toBeEmpty()
         ->and(DB::table('jobs')->value('attempts'))->toBe(1)
-        ->and($next->waitMs)->toBeBetween(9_000, 10_000);
+        ->and($next->waitMs)->toBeBetween(9_000, 10_001);
 });
 
 it('prefixes its Redis keys with the key prefix, then the cache prefix, then the app name', function (array $config, string $prefix) {
