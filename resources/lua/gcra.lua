@@ -31,7 +31,8 @@ local budget = tonumber(ARGV[4])
 local reserve = ARGV[5] == '1'
 local floor = math.max(now, pause)
 local allow = tonumber(ARGV[6])
-local window = tonumber(ARGV[7])
+-- Millisecond timestamps are floored, so retain starts for one extra millisecond.
+local window = tonumber(ARGV[7]) + 1
 
 if emission == 0 then
     if floor - now > budget then

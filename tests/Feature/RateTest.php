@@ -255,6 +255,23 @@ it('releases a held reservation without waiting when its timeout is short or unk
     expect((new ThrottleJob('provider', allow: 1))->handle($job, fn () => 'ran'))->toBeNull();
 })->with([9, 0, null]);
 
+it('releases a held reservation when the job has a retry deadline', function () {
+    $queueJob = Mockery::mock(Illuminate\Queue\Jobs\RedisJob::class)->makePartial();
+    $queueJob->shouldReceive('payload')->andReturn(['retryUntil' => time() + 60, 'jobThrottle' => ['attempt' => 1, 'waited' => 0, 'slots' => [hash('xxh128', 'provider') => 123]]]);
+    $queueJob->shouldReceive('attempts')->andReturn(1);
+    $queueJob->shouldReceive('timeout')->andReturn(10);
+    $queueJob->shouldReceive('release')->once();
+    $queueJob->shouldReceive('getRedisQueue')->andThrow(new RuntimeException('No queue in this test'));
+    $queueJob->shouldReceive('resolveName')->andReturn('test');
+    $limiter = Mockery::mock(Limiter::class);
+    $limiter->shouldReceive('acquire')->once()->andReturn(new Decision(100, 123));
+    app()->instance(Limiter::class, $limiter);
+    $job = new ProviderJob;
+    $job->setJob($queueJob);
+
+    expect((new ThrottleJob('provider', allow: 1))->handle($job, fn () => 'ran'))->toBeNull();
+});
+
 it('caps an in-process wait at one second and releases the residual', function () {
     $queueJob = Mockery::mock(Illuminate\Queue\Jobs\RedisJob::class)->makePartial();
     $queueJob->shouldReceive('payload')->andReturn(['jobThrottle' => ['attempt' => 1, 'waited' => 0, 'slots' => [hash('xxh128', 'provider') => 123]]]);

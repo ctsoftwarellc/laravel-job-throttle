@@ -148,7 +148,7 @@ final class ThrottleJob
 
         try {
             $started = hrtime(true);
-            $inlineLimit = $queueJob instanceof RedisJob && ($queueJob->timeout() ?? 0) >= 10 ? 1000 : 0;
+            $inlineLimit = $queueJob instanceof RedisJob && $queueJob->retryUntil() === null && ($queueJob->timeout() ?? 0) >= 10 ? 1000 : 0;
             do {
                 $decision = $limiter->acquire(
                     $key,

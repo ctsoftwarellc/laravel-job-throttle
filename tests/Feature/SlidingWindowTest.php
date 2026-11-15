@@ -19,6 +19,32 @@ it('keeps actual starts within every sliding window after an outage', function (
     expect(count($starts))->toBeLessThanOrEqual(8);
 });
 
+it('keeps sub-millisecond admissions inside every real one-second window', function () {
+    $lua = file_get_contents(__DIR__.'/../../resources/lua/gcra.lua');
+    $lua = str_replace("local time = redis.call('TIME')\nlocal now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)", 'local now = math.floor(tonumber(ARGV[8]) / 1000)', $lua);
+    $redis = Redis::connection();
+
+    foreach ([1, 500, 999] as $offset) {
+        $key = "edge:{$offset}";
+        $starts = [];
+        $first = 1_000_000_000 + $offset;
+        foreach (array_fill(0, 8, $first) as $time) {
+            [$wait] = $redis->eval($lua, 2, $key, "{$key}:pause", 'acquire', 125, 1, 10000, 1, 8, 1000, $time);
+            expect($wait)->toBe(0);
+            $starts[] = $time;
+        }
+        $edge = 1_001_000_000;
+        [$wait] = $redis->eval($lua, 2, $key, "{$key}:pause", 'acquire', 125, 1, 10000, 1, 8, 1000, $edge);
+        if ($wait === 0) {
+            $starts[] = $edge;
+        }
+        expect(count(array_filter($starts, fn (int $start) => $edge - $start < 1_000_000)))->toBeLessThanOrEqual(8)
+            ->and($wait)->toBe(1);
+        [$wait] = $redis->eval($lua, 2, $key, "{$key}:pause", 'acquire', 125, 1, 10000, 1, 8, 1000, $edge + 1000);
+        expect($wait)->toBe(0);
+    }
+});
+
 it('keeps every sliding window within the rate and eventually runs each job', function (int $allow, int $every, string $pattern, int $seed) {
     $source = file_get_contents(__DIR__.'/../../resources/lua/gcra.lua');
     $source = str_replace("local time = redis.call('TIME')\nlocal now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)", 'local now = tonumber(ARGV[8])', $source);
@@ -117,7 +143,7 @@ it('keeps a due reservation without moving the tail and rejects a wait over budg
     $redis = Redis::connection();
     $redis->hmset('budget:rate', ['tat' => 1_100_000, 'starts' => '[1000000]']);
 
-    expect($redis->eval($source, 2, 'budget:rate', 'budget:pause', 'acquire', 1000, 999_000, 999, 1, 1, 1000, 1_000_000))->toBe([-1, 0])
-        ->and($redis->eval($source, 2, 'budget:rate', 'budget:pause', 'acquire', 1000, 999_000, 1000, 1, 1, 1000, 1_000_000))->toBe([1000, 999_000])
+    expect($redis->eval($source, 2, 'budget:rate', 'budget:pause', 'acquire', 1000, 999_000, 1000, 1, 1, 1000, 1_000_000))->toBe([-1, 0])
+        ->and($redis->eval($source, 2, 'budget:rate', 'budget:pause', 'acquire', 1000, 999_000, 1001, 1, 1, 1000, 1_000_000))->toBe([1001, 999_000])
         ->and((int) $redis->hget('budget:rate', 'tat'))->toBe(1_100_000);
 });
