@@ -75,3 +75,49 @@ it('keeps every sliding window within the rate and eventually runs each job', fu
         }
     }
 });
+
+it('finishes a burst close to its allotted rate without excess releases', function () {
+    $source = file_get_contents(__DIR__.'/../../resources/lua/gcra.lua');
+    $source = str_replace("local time = redis.call('TIME')\nlocal now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)", 'local now = tonumber(ARGV[8])', $source);
+    $redis = Redis::connection();
+    $base = 1_000_000;
+    $events = [];
+    for ($i = 0; $i < 200; $i++) {
+        $events[] = ['at' => $base, 'slot' => 0, 'id' => $i];
+    }
+    $starts = [];
+    $releases = 0;
+    $iterations = 0;
+    while ($events !== [] && $iterations++ < 2000) {
+        usort($events, fn ($a, $b) => [$a['at'], $a['id']] <=> [$b['at'], $b['id']]);
+        $event = array_shift($events);
+        $now = $event['at'];
+        [$wait, $slot] = $redis->eval($source, 2, 'throughput:rate', 'throughput:pause', 'acquire', 125, $event['slot'], 100_000_000, 1, 8, 1000, $now);
+        if ($wait === 0) {
+            $starts[] = $now;
+            expect(count(array_filter($starts, fn (int $start) => $start > $now - 1000)))->toBeLessThanOrEqual(8);
+        } else {
+            $return = $event['slot'] > 0 && $slot === $event['slot'] && $wait < 1000
+                ? $now + $wait
+                : (int) (ceil(($now + $wait) / 1000) * 1000) + 5 + ($event['id'] * 37 % 100);
+            if ($return !== $now + $wait) {
+                $releases++;
+            }
+            $events[] = ['at' => $return, 'slot' => $slot, 'id' => $event['id']];
+        }
+    }
+    expect($starts)->toHaveCount(200)
+        ->and(max($starts) - $base)->toBeLessThanOrEqual(25_125)
+        ->and($releases)->toBeLessThanOrEqual(400);
+});
+
+it('keeps a due reservation without moving the tail and rejects a wait over budget', function () {
+    $source = file_get_contents(__DIR__.'/../../resources/lua/gcra.lua');
+    $source = str_replace("local time = redis.call('TIME')\nlocal now = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)", 'local now = tonumber(ARGV[8])', $source);
+    $redis = Redis::connection();
+    $redis->hmset('budget:rate', ['tat' => 1_100_000, 'starts' => '[1000000]']);
+
+    expect($redis->eval($source, 2, 'budget:rate', 'budget:pause', 'acquire', 1000, 999_000, 999, 1, 1, 1000, 1_000_000))->toBe([-1, 0])
+        ->and($redis->eval($source, 2, 'budget:rate', 'budget:pause', 'acquire', 1000, 999_000, 1000, 1, 1, 1000, 1_000_000))->toBe([1000, 999_000])
+        ->and((int) $redis->hget('budget:rate', 'tat'))->toBe(1_100_000);
+});

@@ -51,10 +51,20 @@ foreach ($sizes as $n) {
             $roundTrips += (int) $books->hget("worker:{$id}", 'round_trips');
         }
 
+        $starts = array_values($books->zrange('starts', 0, -1, ['withscores' => true]));
+        $first = $maxInWindow = 0;
+        foreach ($starts as $index => $start) {
+            while ($start - $starts[$first] >= 1_000_000) {
+                $first++;
+            }
+            $maxInWindow = max($maxInWindow, $index - $first + 1);
+        }
+
         printf(
             "| %s | %d | %.1f | %.1f | %d | %.2f | %d | %.1f |\n",
             $label, $n, $seconds, $n / 8, $pops, $pops / $n, $roundTrips, $roundTrips / $n,
         );
+        printf("  Starts: %d; max in any 1 s window: %d\n", count($starts), $maxInWindow);
     }
 }
 

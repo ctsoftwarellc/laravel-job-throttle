@@ -132,7 +132,7 @@ final class ThrottleJob
      *
      * @return array{Decision, (Closure(): void)|null}
      */
-    private function admit(Limiter $limiter, string $key, Job $queueJob, ThrottleState $state): array
+    private function admit(Limiter $limiter, string $key, Job $queueJob, ThrottleState &$state): array
     {
         $reservedSlot = $state->slotFor($key, $queueJob->attempts());
         $leave = null;
@@ -147,13 +147,30 @@ final class ThrottleJob
         }
 
         try {
-            $decision = $limiter->acquire(
-                $key,
-                $this->rate,
-                $reservedSlot,
-                max(0, $this->maxWaitMs() - $state->waitedMs),
-                reserve: $queueJob instanceof RedisJob,
-            );
+            $started = hrtime(true);
+            $inlineLimit = $queueJob instanceof RedisJob && ($queueJob->timeout() ?? 0) >= 10 ? 1000 : 0;
+            do {
+                $decision = $limiter->acquire(
+                    $key,
+                    $this->rate,
+                    $reservedSlot,
+                    max(0, $this->maxWaitMs() - $state->waitedMs),
+                    reserve: $queueJob instanceof RedisJob,
+                );
+                $elapsed = (int) ceil((hrtime(true) - $started) / 1_000_000);
+                if ($this->concurrency !== null || $reservedSlot === 0 || $decision->slotMs !== $reservedSlot || $decision->waitMs <= 0
+                    || $elapsed >= $inlineLimit
+                    || $decision->waitMs > $this->maxWaitMs() - $state->waitedMs) {
+                    break;
+                }
+                $beforeSleep = hrtime(true);
+                usleep(min($decision->waitMs, $inlineLimit - $elapsed) * 1000);
+                $slept = (int) ceil((hrtime(true) - $beforeSleep) / 1_000_000);
+                $state = $state->after($key, $queueJob->attempts(), $reservedSlot, $slept);
+            } while ($state->waitedMs <= $this->maxWaitMs());
+            if ($state->waitedMs > $this->maxWaitMs()) {
+                $decision = new Decision(-1);
+            }
         } catch (Throwable $e) {
             $this->leave($leave);
 

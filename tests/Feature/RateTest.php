@@ -117,6 +117,10 @@ it('spaces the starts of reserved jobs that all fell due while no worker ran', f
 });
 
 it('runs a late job on its slot when starting it keeps the rate, and spaces the jobs that would not', function () {
+    $starts = [];
+    ProviderJob::$during = function () use (&$starts): void {
+        $starts[] = microtime(true);
+    };
     foreach (['a', 'b', 'c'] as $name) {
         ProviderJob::dispatch($name, 'provider', 1);
     }
@@ -128,12 +132,15 @@ it('runs a late job on its slot when starting it keeps the rate, and spaces the 
         usleep(50_000);
     }
 
-    $restarted = time();
     workAll();
 
-    expect(ProviderJob::$runs)->toBe(['a', 'b'])
-        ->and(delayedJobs())->toHaveCount(1)
-        ->and(delayedJobs()[0]['availableAt'])->toBeGreaterThan($restarted);
+    expect(ProviderJob::$runs[0])->toBe('a')
+        ->and(ProviderJob::$runs[1])->toBe('b');
+    if (count($starts) === 3) {
+        expect($starts[2] - $starts[1])->toBeGreaterThanOrEqual(0.99);
+    } else {
+        expect(delayedJobs())->toHaveCount(1);
+    }
 });
 
 it('answers over budget without reserving a slot', function () {
@@ -212,8 +219,60 @@ it('applies a multi-second sliding window through the limiter to returning jobs'
     }
 
     $eighth = $limiter->acquire('provider', $rate, $before - 6000, 60_000);
-    $after = redisNowMs();
-
     expect($eighth->waitMs)->toBeGreaterThan(0)
-        ->and($eighth->slotMs)->toBeBetween($before + 2000, $after + 2000);
+        ->and($eighth->slotMs)->toBe($before - 6000);
+});
+
+it('rechecks a short wait on the same reservation and counts it against the budget', function () {
+    $queueJob = Mockery::mock(Illuminate\Queue\Jobs\RedisJob::class)->makePartial();
+    $queueJob->shouldReceive('payload')->andReturn(['jobThrottle' => ['attempt' => 1, 'waited' => 50, 'slots' => [hash('xxh128', 'provider') => 123]]]);
+    $queueJob->shouldReceive('attempts')->andReturn(1);
+    $queueJob->shouldReceive('timeout')->andReturn(10);
+    $limiter = Mockery::mock(Limiter::class);
+    $limiter->shouldReceive('acquire')->once()->withArgs(fn ($key, $rate, $slot, $budget) => $slot === 123 && $budget === 950)->andReturn(new Decision(10, 123));
+    $limiter->shouldReceive('acquire')->once()->withArgs(fn ($key, $rate, $slot, $budget) => $slot === 123 && $budget <= 940)->andReturn(new Decision(0, 123));
+    app()->instance(Limiter::class, $limiter);
+    $job = new ProviderJob;
+    $job->setJob($queueJob);
+
+    expect((new ThrottleJob('provider', allow: 1, maxWait: 1))->handle($job, fn () => 'ran'))->toBe('ran');
+});
+
+it('releases a held reservation without waiting when its timeout is short or unknown', function (?int $timeout) {
+    $queueJob = Mockery::mock(Illuminate\Queue\Jobs\RedisJob::class)->makePartial();
+    $queueJob->shouldReceive('payload')->andReturn(['jobThrottle' => ['attempt' => 1, 'waited' => 0, 'slots' => [hash('xxh128', 'provider') => 123]]]);
+    $queueJob->shouldReceive('attempts')->andReturn(1);
+    $queueJob->shouldReceive('timeout')->andReturn($timeout);
+    $queueJob->shouldReceive('release')->once();
+    $queueJob->shouldReceive('getRedisQueue')->andThrow(new RuntimeException('No queue in this test'));
+    $queueJob->shouldReceive('resolveName')->andReturn('test');
+    $limiter = Mockery::mock(Limiter::class);
+    $limiter->shouldReceive('acquire')->once()->andReturn(new Decision(100, 123));
+    app()->instance(Limiter::class, $limiter);
+    $job = new ProviderJob;
+    $job->setJob($queueJob);
+
+    expect((new ThrottleJob('provider', allow: 1))->handle($job, fn () => 'ran'))->toBeNull();
+})->with([9, 0, null]);
+
+it('caps an in-process wait at one second and releases the residual', function () {
+    $queueJob = Mockery::mock(Illuminate\Queue\Jobs\RedisJob::class)->makePartial();
+    $queueJob->shouldReceive('payload')->andReturn(['jobThrottle' => ['attempt' => 1, 'waited' => 0, 'slots' => [hash('xxh128', 'provider') => 123]]]);
+    $queueJob->shouldReceive('attempts')->andReturn(1);
+    $queueJob->shouldReceive('timeout')->andReturn(10);
+    $queueJob->shouldReceive('release')->once();
+    $queueJob->shouldReceive('getRedisQueue')->andThrow(new RuntimeException('No queue in this test'));
+    $queueJob->shouldReceive('resolveName')->andReturn('test');
+    $limiter = Mockery::mock(Limiter::class);
+    $limiter->shouldReceive('acquire')->once()->andReturn(new Decision(2000, 123));
+    $limiter->shouldReceive('acquire')->once()->andReturnUsing(function () {
+        return new Decision(1000, 123);
+    });
+    app()->instance(Limiter::class, $limiter);
+    $job = new ProviderJob;
+    $job->setJob($queueJob);
+    $started = hrtime(true);
+
+    expect((new ThrottleJob('provider', allow: 1))->handle($job, fn () => 'ran'))->toBeNull()
+        ->and((hrtime(true) - $started) / 1_000_000_000)->toBeBetween(0.9, 1.8);
 });

@@ -47,26 +47,26 @@ The job must use `Illuminate\Queue\InteractsWithQueue` (included in `Illuminate\
 
 Laravel's `Redis::throttle()` counts jobs in a fixed window. A job that finds the window full is released for a fixed time and then tries again, so a blast of N jobs is popped again and again until each one finds room. Every one of those pops spends a try, and the jobs at the back of the queue can run out of tries or `retryUntil` before they run.
 
-This package uses the Generic Cell Rate Algorithm instead. One Lua script, timed by the Redis clock so every worker agrees, stores the next free slot and recent start times for each key. Each job takes the next slot, and a job whose slot is in the future is released to that slot. If late starts fill the sliding window, a returning job takes another slot. A blast of N jobs at R per second needs at least N/R seconds. Whole-second releases and late starts can add time and extra pops.
+This package uses the Generic Cell Rate Algorithm instead. One Lua script, timed by the Redis clock so every worker agrees, stores the next free slot and recent start times for each key. Each job takes the next slot, and a job whose slot is in the future is released to that slot. If late starts fill the sliding window, a returning job keeps its slot and waits until it is safe to start. A blast of N jobs at R per second needs at least N/R seconds. Whole-second releases and late starts can add time and extra pops.
 
-Slots are spaced evenly, one every `every / allow` seconds (rounded up to whole milliseconds), and actual admissions are checked against the sliding window, so a provider that allows 8 calls per second sees at most 8 calls start in any one-second window.
+Slots are spaced evenly, one every `every / allow` seconds (rounded up to whole milliseconds), and admissions are checked against the sliding window. Worker scheduling between admission and the provider call can shift actual call start times.
 
 ### Benchmark
 
 `benchmarks/run.php` dispatches a blast of N jobs at 8 per second on 10 worker processes. Each job takes 150 ms. It counts the jobs popped and the Redis commands the workers sent (queue and throttle together), for this package and for Laravel's `Redis::throttle()` with a 1-second release.
 
-Measured on an Apple M4 (16 GB), macOS 27.0, PHP 8.4.27, Redis 7.4.11 on the same machine, PhpRedis, workers with `--sleep=1` and unlimited tries:
+Measured before the one-second wait ceiling on an Apple M4 (16 GB), macOS 27.0, PHP 8.4.27, Redis 7.4.11 on the same machine, PhpRedis, workers with `--sleep=1` and unlimited tries:
 
 | Strategy | N | Finished (s) | Ideal N/R (s) | Job pops | Pops per job | Redis round trips | Round trips per job |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| ThrottleJob | 200 | 34.6 | 25.0 | 463 | 2.31 | 3,502 | 17.5 |
-| `Redis::throttle`, 1 s release | 200 | 25.1 | 25.0 | 2,594 | 12.97 | 13,603 | 68.0 |
-| ThrottleJob | 1,000 | 168.2 | 125.0 | 2,321 | 2.32 | 17,462 | 17.5 |
-| `Redis::throttle`, 1 s release | 1,000 | 126.8 | 125.0 | 59,139 | 59.14 | 298,848 | 298.8 |
-| ThrottleJob | 3,000 | 501.5 | 375.0 | 6,992 | 2.33 | 52,491 | 17.5 |
-| `Redis::throttle`, 1 s release | 3,000 | 376.6 | 375.0 | 465,847 | 155.28 | 2,337,455 | 779.2 |
+| ThrottleJob | 200 | 27.1 | 25.0 | 399 | 2.00 | 2,922 | 14.6 |
+| `Redis::throttle`, 1 s release | 200 | 25.5 | 25.0 | 2,576 | 12.88 | 13,525 | 67.6 |
+| ThrottleJob | 1,000 | 127.8 | 125.0 | 2,065 | 2.06 | 14,654 | 14.7 |
+| `Redis::throttle`, 1 s release | 1,000 | 125.6 | 125.0 | 58,549 | 58.55 | 295,916 | 295.9 |
+| ThrottleJob | 3,000 | 379.3 | 375.0 | 6,498 | 2.17 | 47,825 | 15.9 |
+| `Redis::throttle`, 1 s release | 3,000 | 378.3 | 375.0 | 494,853 | 164.95 | 2,483,247 | 827.7 |
 
-The package took longer in this run because it enforces a sliding window and some jobs needed another wait. It used fewer queue pops and Redis commands. Each `Redis::throttle()` pop spends an attempt, while this package refunds throttle waits on Redis queues. Round trips per job include the queue's own polling.
+The package took 8.4% longer than the ideal for 200 jobs, 2.2% longer for 1,000, and 1.1% longer for 3,000. It used fewer queue pops and Redis commands. Each `Redis::throttle()` pop spends an attempt, while this package refunds throttle waits on Redis queues. Round trips per job include the queue's own polling.
 
 Run it yourself against a scratch Redis (it flushes database 15): `REDIS_PORT=6379 php benchmarks/run.php 200 1000 3000`.
 
@@ -222,7 +222,7 @@ The expectation loads only when Pest is installed. In PHPUnit, use `JobThrottle:
 
 - **Redis queues only get free waits.** On the database, SQS or another queue, a wait spends a try like a plain `release()`, and a waiting job takes no slot: it asks again when the next slot is free. `maxWait` still holds there: the throttle keeps the time each job waited in its own Redis, by the job's uuid, until the job can no longer wait.
 - **SQS visibility.** A single SQS release is capped at 12 hours. If the key is still paused, the job waits again.
-- **Whole seconds.** Laravel releases jobs in whole seconds, so jobs whose slots fall in the same second start together. The rate holds over any sliding window of the configured length.
+- **Whole seconds.** Laravel releases jobs in whole seconds. A returning Redis job may wait in the worker for at most 1 second before another admission check, only when its timeout is at least 10 seconds. This wait counts against the job timeout because Laravel arms its alarm before middleware runs. Admissions are checked over a sliding window of the configured length.
 - **Late jobs keep the rate.** A job that comes back after its slot (a busy queue, a slow worker) runs at once if the key has room in the current window. Jobs that come back together after a worker outage do not all start at once: the rest take new slots at the rate.
 - **Poll at least once a second.** A worker that sleeps 3 seconds between empty polls finds 3 seconds of released jobs at once, and only one second's worth may start. Run enough worker processes, or a short `--sleep`, that a released job is picked up in the second it becomes due.
 - **Redis Cluster** keeps the throttle keys in one slot. The free-wait rewrite needs the queue key Laravel builds outside a cluster; on a cluster a wait spends one try.

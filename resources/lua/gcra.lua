@@ -71,6 +71,10 @@ if reserved > 0 and pause <= reserved then
         save(tat, true)
         return {0, reserved}
     end
+    if ready - now > budget then
+        return {-1, 0}
+    end
+    return {ready - now, reserved}
 end
 
 local slot = math.max(tat, floor, ready)

@@ -18,6 +18,8 @@ final class SendSms implements ShouldQueue
 {
     use InteractsWithQueue, Queueable;
 
+    public int $timeout = 60;
+
     public function __construct(public string $strategy) {}
 
     /**
@@ -44,6 +46,7 @@ final class SendSms implements ShouldQueue
 
     public function handle(): void
     {
+        Redis::connection('bench')->eval("local t = redis.call('TIME'); local id = redis.call('INCR', KEYS[2]); redis.call('ZADD', KEYS[1], t[1] * 1000000 + t[2], id)", 2, 'starts', 'start-id');
         usleep(150_000);
 
         Redis::connection('bench')->incr('done');
