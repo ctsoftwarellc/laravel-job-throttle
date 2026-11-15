@@ -1,0 +1,73 @@
+{
+    "name": "ctsoftwarellc/laravel-job-throttle",
+    "description": "Redis rate limiting for Laravel queued jobs that call outside APIs: exact GCRA slots, Retry-After pauses and waits that never spend a job's tries.",
+    "keywords": ["laravel", "queue", "job", "middleware", "throttle", "rate-limit", "gcra", "redis", "retry-after"],
+    "homepage": "https://github.com/ctsoftwarellc/laravel-job-throttle",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "CT Software LLC",
+            "email": "support@ctsoftwarellc.com"
+        }
+    ],
+    "require": {
+        "php": "^8.2",
+        "illuminate/contracts": "^12.0|^13.0",
+        "illuminate/http": "^12.0|^13.0",
+        "illuminate/mail": "^12.0|^13.0",
+        "illuminate/notifications": "^12.0|^13.0",
+        "illuminate/queue": "^12.0|^13.0",
+        "illuminate/redis": "^12.0|^13.0",
+        "illuminate/support": "^12.0|^13.0"
+    },
+    "require-dev": {
+        "larastan/larastan": "^3.1",
+        "laravel/pint": "^1.20",
+        "orchestra/testbench": "^10.0|^11.0",
+        "pestphp/pest": "^3.8|^4.0|^5.0",
+        "pestphp/pest-plugin-type-coverage": "^3.5|^4.0|^5.0",
+        "predis/predis": "^2.3|^3.0"
+    },
+    "suggest": {
+        "ext-redis": "The PhpRedis client; the package is tested with it and with predis/predis.",
+        "predis/predis": "The Predis client, if you do not use PhpRedis.",
+        "pestphp/pest": "Adds the toBeThrottledBy() expectation to your Pest tests."
+    },
+    "autoload": {
+        "psr-4": {
+            "Ctsoftwarellc\\JobThrottle\\": "src/"
+        },
+        "files": [
+            "src/Testing/pest.php"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Ctsoftwarellc\\JobThrottle\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "pest",
+        "test:types": "@php -d memory_limit=-1 vendor/bin/pest --type-coverage --min=100",
+        "test:coverage": "pest --coverage --min=95",
+        "test:mutate": "pest --mutate --min=90",
+        "analyse": "phpstan analyse --memory-limit=1G",
+        "format": "pint",
+        "lint": "pint --test"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Ctsoftwarellc\\JobThrottle\\JobThrottleServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

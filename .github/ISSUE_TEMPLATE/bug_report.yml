@@ -1,0 +1,40 @@
+name: Bug report
+description: A throttle that runs jobs too fast, too slow, twice, or not at all.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The middleware setup (key, allow, every, concurrency, maxWait) and the smallest job or test that shows it.
+      render: php
+    validations:
+      required: true
+  - type: input
+    id: package-version
+    attributes:
+      label: Package version
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: input
+    id: laravel-version
+    attributes:
+      label: Laravel, PHP and Redis versions
+      placeholder: Laravel 12.40, PHP 8.4, Redis 7.4
+    validations:
+      required: true
+  - type: dropdown
+    id: queue
+    attributes:
+      label: Queue driver
+      options: [redis, redis with Horizon, database, sqs, other]
+    validations:
+      required: true
