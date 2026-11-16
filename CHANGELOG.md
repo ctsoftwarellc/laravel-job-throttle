@@ -4,6 +4,17 @@ All notable changes to this package are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A provider 429 on a sync job fails the job once with a `LogicException` that names the job and keeps the original exception as previous, instead of escaping the middleware. Sync jobs still run once without admission.
+
+### Added
+
+- `LimiterContractTest` pins the Redis adapter's public wire contract: the two cluster-tagged keys, argument order and types for a null rate and `Rate(3, 2)`, the reserve flag, the returned `Decision`, the PhpRedis combined-array and Predis inline `EVAL` forms, and the prefixed wait-state key roundtrip with its TTL.
+- `--fail-on-skipped` on every CI test, line and mutation step, and `v*` tag runs on push.
+
 ## [1.0.0] - 2026-11-11
 
 ### Added

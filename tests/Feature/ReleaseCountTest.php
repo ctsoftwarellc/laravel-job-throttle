@@ -2,15 +2,38 @@
 
 declare(strict_types=1);
 
+use Ctsoftwarellc\JobThrottle\Exceptions\ProviderRateLimited;
+use Ctsoftwarellc\JobThrottle\Facades\JobThrottle;
 use Ctsoftwarellc\JobThrottle\Middleware\ThrottleJob;
 use Ctsoftwarellc\JobThrottle\Support\PayloadRelease;
 use Ctsoftwarellc\JobThrottle\Support\RedisLimiter;
+use Ctsoftwarellc\JobThrottle\Testing\FakeLimiter;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
 use Illuminate\Queue\Events\JobProcessing;
+use Illuminate\Queue\Jobs\FakeJob;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Redis;
 
 mutates(RedisLimiter::class, ThrottleJob::class, PayloadRelease::class);
+
+/**
+ * A queue job that counts every release and its delay.
+ */
+function countingQueueJob(): FakeJob
+{
+    return new class extends FakeJob
+    {
+        /** @var list<int> */
+        public array $releaseDelays = [];
+
+        public function release($delay = 0): void
+        {
+            parent::release($delay);
+
+            $this->releaseDelays[] = $delay;
+        }
+    };
+}
 
 it('finishes a blast near N/R while allowing another wait to protect the sliding window', function () {
     $pops = 0;
@@ -60,3 +83,26 @@ it('keeps one small hash per throttle key, which expires when the key is idle', 
 
     expect(Redis::exists('{tests:job-throttle:provider}:tat'))->toBe(0);
 });
+
+it('releases exactly once for each throttle wait', function (Closure $setup, ?int $retryAfter, int $bodyRuns, array $releaseDelays) {
+    $fake = JobThrottle::fake();
+    $queueJob = countingQueueJob();
+    $job = new ProviderJob('waiting');
+    $job->setJob($queueJob);
+
+    $setup($fake);
+    if ($retryAfter !== null) {
+        ProviderJob::$failures = [ProviderRateLimited::after($retryAfter)];
+    }
+
+    (new ThrottleJob('provider', allow: 1, every: 10, concurrency: 1))->handle($job, fn (ProviderJob $job) => $job->handle());
+
+    expect(ProviderJob::$runs)->toHaveCount($bodyRuns)
+        ->and($queueJob->releaseDelays)->toBe($releaseDelays)
+        ->and($queueJob->failedWith)->toBeNull();
+})->with([
+    'rate wait' => [fn (FakeLimiter $fake) => $fake->rateLimited('provider', 10), null, 0, [10]],
+    'concurrency full' => [fn (FakeLimiter $fake) => $fake->concurrencyFull('provider'), null, 0, [2]],
+    'provider 429' => [fn (FakeLimiter $fake) => null, 30, 1, [30]],
+    'admitted' => [fn (FakeLimiter $fake) => null, null, 1, []],
+]);

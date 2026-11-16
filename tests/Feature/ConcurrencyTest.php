@@ -197,6 +197,58 @@ it('counts concurrency waits toward maxWait', function () {
     expect($this->failures[0]->getMessage())->toBe('The job would wait past its 1 second limit on throttle key [provider]. It has already waited 0 seconds.');
 });
 
+it('stores the full concurrency wait and remembers it for a non-Redis job', function () {
+    Illuminate\Support\Facades\Date::setTestNow('2026-11-11 12:00:00.000');
+    $limiter = Mockery::mock(Limiter::class);
+    $limiter->shouldReceive('state')->once()->with('concurrency-job')->andReturn(new ThrottleState);
+    $limiter->shouldReceive('enter')->once()->with('provider', 1, 660)->andReturnNull();
+    $limiter->shouldReceive('remember')->once()->withArgs(
+        fn (string $uuid, ThrottleState $state, int $ttl) => $uuid === 'concurrency-job'
+            && $state->waitedMs === 2000
+            && $state->slots === [hash('xxh128', 'provider') => 0]
+            && $ttl === 3603,
+    );
+    app()->instance(Limiter::class, $limiter);
+
+    $queueJob = Mockery::mock(Illuminate\Contracts\Queue\Job::class);
+    $queueJob->shouldReceive('uuid')->andReturn('concurrency-job');
+    $queueJob->shouldReceive('attempts')->andReturn(0);
+    $queueJob->shouldReceive('timeout')->andReturnNull();
+    $queueJob->shouldReceive('release')->once()->with(2);
+
+    $job = new ProviderJob('concurrency');
+    $job->setJob($queueJob);
+
+    (new ThrottleJob('provider', concurrency: 1))->handle($job, fn () => throw new RuntimeException('Must wait'));
+
+    Illuminate\Support\Facades\Date::setTestNow();
+});
+
+it('locks a slot for the configured lock, the job timeout plus sixty, or an explicit lockFor', function (?int $lockFor, int $configured, int $locked) {
+    config(['job-throttle.concurrency_lock_for' => $configured]);
+    $limiter = Mockery::mock(Limiter::class);
+    $limiter->shouldReceive('state')->once()->with('lock-job')->andReturn(new ThrottleState);
+    $limiter->shouldReceive('enter')->once()->withArgs(
+        fn (string $key, int $limit, int $ttl) => $key === 'provider' && $limit === 1 && $ttl === $locked,
+    )->andReturn(fn () => null);
+    $limiter->shouldReceive('acquire')->once()->andReturn(new Decision(0));
+    app()->instance(Limiter::class, $limiter);
+
+    $queueJob = Mockery::mock(Illuminate\Contracts\Queue\Job::class);
+    $queueJob->shouldReceive('uuid')->andReturn('lock-job');
+    $queueJob->shouldReceive('attempts')->andReturn(0);
+    $queueJob->shouldReceive('timeout')->andReturnNull();
+
+    $job = new ProviderJob('lock');
+    $job->setJob($queueJob);
+
+    (new ThrottleJob('provider', concurrency: 1, lockFor: $lockFor))->handle($job, fn () => 'ran');
+})->with([
+    'a null job timeout beats a smaller configured lock' => [null, 59, 60],
+    'an explicit lockFor wins' => [7, 660, 7],
+    'a larger configured lock is honored' => [null, 660, 660],
+]);
+
 it('logs a slot that cannot be freed and keeps the job\'s own exception', function () {
     Log::spy();
     $exceptions = [];

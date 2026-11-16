@@ -67,9 +67,24 @@ final class ThrottleJob
     {
         $queueJob = $this->queueJobOf($job);
 
-        // Run inline: releasing a sync job would drop it.
+        // No queue job: run inline, as there is nothing to release or fail.
         if ($queueJob === null) {
             return $next($job);
+        }
+
+        // A sync job cannot be delayed: a provider 429 fails it clearly instead of escaping.
+        if ($queueJob instanceof SyncJob) {
+            try {
+                return $next($job);
+            } catch (RetryAfter $e) {
+                $queueJob->fail(new LogicException(
+                    'The job throttle cannot delay ['.$job::class.'] on the sync queue. Use a queued connection to retry rate-limited jobs.',
+                    0,
+                    $e,
+                ));
+
+                return null;
+            }
         }
 
         $key = $this->keyFor($job);
@@ -124,7 +139,7 @@ final class ThrottleJob
 
         $queueJob = property_exists($job, 'job') ? $job->job : null;
 
-        return $queueJob instanceof Job && ! $queueJob instanceof SyncJob ? $queueJob : null;
+        return $queueJob instanceof Job ? $queueJob : null;
     }
 
     /**

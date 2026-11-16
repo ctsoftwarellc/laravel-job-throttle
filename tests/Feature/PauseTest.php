@@ -13,6 +13,8 @@ use Ctsoftwarellc\JobThrottle\Support\RedisLimiter;
 use Ctsoftwarellc\JobThrottle\Tests\Fixtures\ProviderJob;
 use GuzzleHttp\Psr7\Response as Psr7Response;
 use Illuminate\Http\Client\Response;
+use Illuminate\Queue\Jobs\SyncJob;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
 
@@ -156,11 +158,76 @@ it('pauses for any exception that implements RetryAfter, clamped to 1 second thr
     'over a day' => [200_000, 86_400],
 ]);
 
-it('rethrows a RetryAfter from a job that runs without a queue', function () {
+it('fails a sync job clearly when its provider requests a delay', function (string $mode) {
     ProviderJob::$failures = [ProviderRateLimited::after(30)];
 
-    ProviderJob::dispatchSync('sync');
-})->throws(ProviderRateLimited::class, 'The provider rate limited the request. Retry after 30 seconds.');
+    if ($mode === 'dispatchSync') {
+        ProviderJob::dispatchSync('sync');
+    } else {
+        ProviderJob::dispatch('sync')->onConnection('sync');
+    }
+
+    expect(ProviderJob::$runs)->toBe(['sync'])
+        ->and($this->failures)->toHaveCount(1)
+        ->and($this->failures[0])->toBeInstanceOf(LogicException::class)
+        ->and($this->failures[0]->getMessage())->toBe('The job throttle cannot delay ['.ProviderJob::class.'] on the sync queue. Use a queued connection to retry rate-limited jobs.')
+        ->and($this->failures[0]->getPrevious())->toBeInstanceOf(ProviderRateLimited::class)
+        ->and($this->failures[0]->getPrevious()->retryAfterSeconds())->toBe(30)
+        ->and(delayedJobs())->toBeEmpty();
+})->with(['dispatchSync', 'sync connection']);
+
+it('fails the sync queue job once and never releases it when the provider requests a delay', function () {
+    $queueJob = Mockery::mock(SyncJob::class);
+    $queueJob->shouldReceive('fail')->once()->withArgs(
+        fn (Throwable $e) => $e instanceof LogicException
+            && $e->getMessage() === 'The job throttle cannot delay ['.ProviderJob::class.'] on the sync queue. Use a queued connection to retry rate-limited jobs.'
+            && $e->getPrevious() instanceof ProviderRateLimited
+            && $e->getPrevious()->retryAfterSeconds() === 30,
+    );
+    $queueJob->shouldNotReceive('release');
+    $job = new ProviderJob('sync');
+    $job->setJob($queueJob);
+    ProviderJob::$failures = [ProviderRateLimited::after(30)];
+
+    (new ThrottleJob('provider', allow: 1))->handle($job, fn (ProviderJob $job) => $job->handle());
+
+    expect(ProviderJob::$runs)->toBe(['sync']);
+});
+
+it('does not run the chain successor when a sync job fails on a provider delay', function () {
+    ProviderJob::$failures = [ProviderRateLimited::after(30)];
+
+    Bus::chain([new ProviderJob('first sync'), new ProviderJob('second sync')])->onConnection('sync')->dispatch();
+
+    expect(ProviderJob::$runs)->toBe(['first sync'])
+        ->and($this->failures)->toHaveCount(1)
+        ->and($this->failures[0])->toBeInstanceOf(LogicException::class);
+});
+
+it('returns the result and rethrows the original 429 for a job with no queue job', function () {
+    $job = new ProviderJob('direct');
+    ProviderJob::$failures = [ProviderRateLimited::after(30)];
+
+    expect(fn () => (new ThrottleJob('provider', allow: 1))->handle($job, fn (ProviderJob $job) => $job->handle()))
+        ->toThrow(ProviderRateLimited::class, 'The provider rate limited the request. Retry after 30 seconds.')
+        ->and(ProviderJob::$runs)->toBe(['direct'])
+        ->and($this->failures)->toBeEmpty();
+});
+
+it('rethrows an unrelated exception from a sync job and records one failure', function () {
+    ProviderJob::$failures = [new RuntimeException('Provider is down')];
+
+    try {
+        ProviderJob::dispatchSync('sync');
+        $this->fail('The sync job should have rethrown its exception.');
+    } catch (RuntimeException $e) {
+        expect($e->getMessage())->toBe('Provider is down');
+    }
+
+    expect(ProviderJob::$runs)->toBe(['sync'])
+        ->and($this->failures)->toHaveCount(1)
+        ->and($this->failures[0]->getMessage())->toBe('Provider is down');
+});
 
 it('reads Retry-After from a response', function (?string $header, int $seconds) {
     Date::setTestNow('2026-11-10 12:00:00');
@@ -182,4 +249,36 @@ it('applies only the provider pause through pauseOnly()', function () {
 
     $job->assertReleased(30);
     JobThrottle::assertPaused('airtable:7', seconds: 30);
+});
+
+it('pauses for exactly one second when the provider asks for zero', function () {
+    JobThrottle::fake();
+    $job = (new ProviderJob('zero'))->withFakeQueueInteractions();
+    ProviderJob::$failures = [new class extends RuntimeException implements RetryAfter
+    {
+        public function retryAfterSeconds(): int
+        {
+            return 0;
+        }
+    }];
+
+    (new ThrottleJob('provider', allow: 1))->handle($job, fn (ProviderJob $job) => $job->handle());
+
+    $job->assertReleased(1);
+    JobThrottle::assertPaused('provider', seconds: 1);
+});
+
+it('stores the provider pause in the refunded payload with its exact wait', function () {
+    ProviderJob::dispatch('paused', 'provider', 1, 10);
+    ProviderJob::$failures = [ProviderRateLimited::after(30)];
+
+    work();
+
+    [$released] = delayedJobs();
+
+    expect($released['payload']['jobThrottle'])->toBe([
+        'attempt' => 1,
+        'waited' => 30_000,
+        'slots' => [hash('xxh128', 'provider') => 0],
+    ]);
 });

@@ -230,7 +230,7 @@ The expectation loads only when Pest is installed. In PHPUnit, use `JobThrottle:
 - **One try in a race.** If a worker takes a released job in the moment before the rewrite, that wait spends one try. A job never runs twice.
 - **Stacked middleware consumes outer slots.** When two `ThrottleJob` middleware are stacked, the outer throttle takes a slot even if the inner throttle releases the job.
 - **Concurrency waits poll** every `concurrency_retry` seconds; there is no waiting list.
-- **Sync jobs run unthrottled.** `dispatchSync()` and jobs run without a queue are not throttled, because releasing them would drop them.
+- **Sync jobs run unthrottled.** `dispatchSync()` and jobs run without a queue are not throttled, because releasing them would drop them. A provider 429 on a sync job fails it once with a `LogicException` that names the job and keeps the original exception as previous; it is not released for a delayed retry.
 - The concurrency limit uses two protected methods of Laravel's `ConcurrencyLimiter`. A test pins them on every Laravel version in CI.
 
 ## Compatibility

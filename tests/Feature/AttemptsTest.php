@@ -124,6 +124,35 @@ it('counts every wait toward maxWait and reserves no slot it cannot use', functi
         ->and(app(Limiter::class)->acquire('provider', new Rate(allow: 1), 0, 60_000)->waitMs)->toBeLessThanOrEqual(6000);
 });
 
+it('asks the limiter for zero remaining budget at and past maxWait, and fails the job once', function (int $waitedMs, string $message) {
+    $limiter = Mockery::mock(Limiter::class);
+    $limiter->shouldReceive('state')->once()->with('budget-job')->andReturn(new ThrottleState(waitedMs: $waitedMs));
+    $limiter->shouldReceive('acquire')->once()->withArgs(
+        fn (string $key, ?Rate $rate, int $reservedSlot, int $budget, bool $reserve) => $key === 'provider' && $reservedSlot === 0 && $budget === 0 && $reserve === false,
+    )->andReturn(new Decision(-1));
+    app()->instance(Limiter::class, $limiter);
+
+    $queueJob = Mockery::mock(Illuminate\Contracts\Queue\Job::class);
+    $queueJob->shouldReceive('uuid')->andReturn('budget-job');
+    $queueJob->shouldReceive('attempts')->andReturn(0);
+    $queueJob->shouldReceive('fail')->once()->withArgs(
+        fn (Throwable $e) => $e instanceof ThrottleWaitExceeded && $e->getMessage() === $message,
+    );
+
+    $job = new ProviderJob('budget');
+    $job->setJob($queueJob);
+    $ran = false;
+
+    (new ThrottleJob('provider', allow: 1, maxWait: 5))->handle($job, function () use (&$ran) {
+        $ran = true;
+    });
+
+    expect($ran)->toBeFalse();
+})->with([
+    'waited equals maxWait' => [5000, 'The job would wait past its 5 second limit on throttle key [provider]. It has already waited 5 seconds.'],
+    'waited past maxWait' => [7000, 'The job would wait past its 5 second limit on throttle key [provider]. It has already waited 7 seconds.'],
+]);
+
 it('counts every wait toward maxWait on a queue that cannot carry it in the payload', function () {
     $this->loadLaravelMigrations();
     app(Limiter::class)->acquire('provider', new Rate(allow: 1, every: 10), 0, 3_600_000);
@@ -171,10 +200,14 @@ it('logs a wait it cannot save and still releases the job', function () {
 
     app('queue.worker')->runNextJob('database', 'default', new WorkerOptions(timeout: 0, sleep: 0, maxTries: 0));
 
+    $uuid = json_decode(DB::table('jobs')->value('payload'), true)['uuid'];
+
     expect(ProviderJob::$runs)->toBeEmpty()
         ->and($this->failures)->toBeEmpty()
+        ->and($uuid)->not->toBeEmpty()
         ->and(DB::table('jobs')->value('available_at'))->toBeGreaterThan(time());
     Log::shouldHaveReceived('warning')->withArgs(fn (string $message, array $context) => $message === 'Job throttle could not save how long the job waited, so its maxWait starts again.'
+        && $context['uuid'] === $uuid
         && $context['exception']->getMessage() === 'Connection lost')->once();
 });
 
@@ -365,6 +398,27 @@ it('counts only the SQS visibility delay toward maxWait', function () {
     $job->setJob($queueJob);
 
     (new ThrottleJob('provider', allow: 1, maxWait: 60_000))->handle($job, fn () => throw new RuntimeException('Must wait'));
+});
+
+it('does not cap a non-SQS wait at the SQS visibility limit', function () {
+    Illuminate\Support\Facades\Date::setTestNow('2026-11-11 12:00:00.000');
+    $queueJob = Mockery::mock(Illuminate\Contracts\Queue\Job::class);
+    $queueJob->shouldReceive('uuid')->andReturn('long-wait-job');
+    $queueJob->shouldReceive('attempts')->andReturn(0);
+    $queueJob->shouldReceive('release')->once()->with(50_000);
+    $limiter = Mockery::mock(Limiter::class);
+    $limiter->shouldReceive('state')->once()->with('long-wait-job')->andReturn(new ThrottleState);
+    $limiter->shouldReceive('acquire')->once()->andReturn(new Decision(50_000_000));
+    $limiter->shouldReceive('remember')->once()->withArgs(
+        fn (string $uuid, ThrottleState $state, int $ttl) => $uuid === 'long-wait-job' && $state->waitedMs === 50_000_000 && $ttl === 110_001,
+    );
+    app()->instance(Limiter::class, $limiter);
+    $job = new ProviderJob;
+    $job->setJob($queueJob);
+
+    (new ThrottleJob('provider', allow: 1, maxWait: 60_000))->handle($job, fn () => throw new RuntimeException('Must wait'));
+
+    Illuminate\Support\Facades\Date::setTestNow();
 });
 
 it('does not cap a long release on a queue other than SQS', function () {

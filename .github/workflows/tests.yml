@@ -3,6 +3,7 @@ name: tests
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -70,7 +71,7 @@ jobs:
           composer update --${{ matrix.stability }} --prefer-dist --no-interaction --no-progress
 
       - name: Run tests
-        run: vendor/bin/pest
+        run: vendor/bin/pest --fail-on-skipped
         env:
           REDIS_CLIENT: ${{ matrix.client }}
 
@@ -88,7 +89,8 @@ jobs:
           extensions: redis
           coverage: none
 
-      - run: composer update --prefer-dist --no-interaction --no-progress
+      # Type coverage 5.1 calls getCollectedData(), removed in PHPStan 2.3.6.
+      - run: composer update --with phpstan/phpstan:2.3.5 --prefer-dist --no-interaction --no-progress
 
       - name: Run PHPStan
         run: vendor/bin/phpstan analyse --no-progress --memory-limit=1G
@@ -135,10 +137,10 @@ jobs:
       - run: composer update --prefer-dist --no-interaction --no-progress
 
       - name: Type coverage
-        run: php -d memory_limit=-1 vendor/bin/pest --type-coverage --min=100
+        run: php -d memory_limit=-1 vendor/bin/pest --type-coverage --min=100 --fail-on-skipped
 
       - name: Line coverage
-        run: vendor/bin/pest --coverage --min=95
+        run: vendor/bin/pest --coverage --min=95 --fail-on-skipped
 
       - name: Mutation testing
-        run: vendor/bin/pest --mutate --min=90
+        run: vendor/bin/pest --mutate --min=90 --fail-on-skipped
