@@ -33,4 +33,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `ThrottlesMail` and `ThrottleMail` for `mail.mailers.*.rate_limit`, compatible with `ctsoftwarellc/laravel-mail-throttle`.
 - `JobThrottle::fake()` with `assertThrottled`, `assertNotThrottled`, `assertPaused` and `assertNotPaused`, the Pest expectation `toBeThrottledBy()` and `JobThrottle::keysFor()`.
 
+[1.0.1]: https://github.com/ctsoftwarellc/laravel-job-throttle/releases/tag/v1.0.1
 [1.0.0]: https://github.com/ctsoftwarellc/laravel-job-throttle/releases/tag/v1.0.0
