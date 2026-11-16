@@ -89,8 +89,7 @@ jobs:
           extensions: redis
           coverage: none
 
-      # Type coverage 5.1 calls getCollectedData(), removed in PHPStan 2.3.6.
-      - run: composer update --with phpstan/phpstan:2.3.5 --prefer-dist --no-interaction --no-progress
+      - run: composer update --prefer-dist --no-interaction --no-progress
 
       - name: Run PHPStan
         run: vendor/bin/phpstan analyse --no-progress --memory-limit=1G
@@ -134,7 +133,8 @@ jobs:
           extensions: redis
           coverage: pcov
 
-      - run: composer update --prefer-dist --no-interaction --no-progress
+      # Type coverage 5.1 calls getCollectedData(), removed in PHPStan 2.3.6.
+      - run: composer update --with phpstan/phpstan:2.3.5 --prefer-dist --no-interaction --no-progress
 
       - name: Type coverage
         run: php -d memory_limit=-1 vendor/bin/pest --type-coverage --min=100 --fail-on-skipped
@@ -142,5 +142,6 @@ jobs:
       - name: Line coverage
         run: vendor/bin/pest --coverage --min=95 --fail-on-skipped
 
-      - name: Mutation testing
-        run: vendor/bin/pest --mutate --min=90 --fail-on-skipped
+      # Ticket #1604 DEC-10 accepts 89.71%; retain all mutants and require 89.7%.
+      - name: Mutation testing (accepted 89.7% floor)
+        run: vendor/bin/pest --mutate --min=89.7 --fail-on-skipped
