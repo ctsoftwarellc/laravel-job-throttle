@@ -11,6 +11,7 @@ use Ctsoftwarellc\JobThrottle\Support\ThrottleState;
 use Illuminate\Contracts\Redis\Factory;
 use Illuminate\Redis\Connections\PhpRedisConnection;
 use Illuminate\Redis\Connections\PredisConnection;
+use Illuminate\Support\Facades\Redis;
 
 mutates(RedisLimiter::class, ThrottleJob::class, PayloadRelease::class);
 
@@ -182,4 +183,28 @@ it('reads no state when the key holds nothing', function () {
     $limiter = limiterWith($connection);
 
     expect($limiter->state('missing'))->toEqual(new ThrottleState);
+});
+
+it('roundtrips isolated job states through Redis with a bounded ttl', function () {
+    $limiter = app(RedisLimiter::class);
+    $first = new ThrottleState(attempt: 2, waitedMs: 1234, slots: ['provider-a' => 5678]);
+    $second = new ThrottleState(attempt: 3, waitedMs: 2345, slots: ['provider-b' => 6789]);
+    $otherApp = new ThrottleState(attempt: 4, waitedMs: 3456, slots: ['provider-c' => 7890]);
+
+    $limiter->remember('job-one', $first, 60);
+    $limiter->remember('job-two', $second, 60);
+    config(['job-throttle.key_prefix' => 'other-app']);
+    $limiter->remember('job-one', $otherApp, 60);
+
+    expect($limiter->state('job-one'))->toEqual($otherApp)
+        ->and($limiter->state('missing'))->toEqual(new ThrottleState);
+
+    config(['job-throttle.key_prefix' => 'tests']);
+
+    expect($limiter->state('job-one'))->toEqual($first)
+        ->and($limiter->state('job-two'))->toEqual($second);
+
+    foreach (['tests:job-throttle-state:job-one', 'tests:job-throttle-state:job-two', 'other-app:job-throttle-state:job-one'] as $key) {
+        expect(Redis::connection()->ttl($key))->toBeBetween(1, 60);
+    }
 });
